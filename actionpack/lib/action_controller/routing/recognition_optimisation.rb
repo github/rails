@@ -63,7 +63,7 @@ module ActionController
         elsif !allows.empty?
           raise MethodNotAllowed.new(*allows)
         else
-          raise RoutingError, "No route matches #{path.inspect} with #{environment.inspect}"
+          raise RoutingError, "No route matches #{path.inspect} with #{environment.except(:request).inspect}"
         end
       end
 
