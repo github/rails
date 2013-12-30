@@ -3,6 +3,14 @@ require 'erubis'
 module ActionView
   module TemplateHandlers
     class Erubis < ::Erubis::Eruby
+      HAVE_FROZEN_STRING_SYNTAX =
+        begin
+          eval "%f()"
+          true
+        rescue SyntaxError
+          false
+        end
+
       def add_preamble(src)
         @newline_pending = 0
         src << "@output_buffer = ActionView::OutputBuffer.new;"
@@ -14,7 +22,11 @@ module ActionView
         if text == "\n"
           @newline_pending += 1
         else
-          src << "@output_buffer.safe_append='"
+          if HAVE_FROZEN_STRING_SYNTAX
+            src << "@output_buffer.safe_append=%f'"
+          else
+            src << "@output_buffer.safe_append='"
+          end
           src << "\n" * @newline_pending if @newline_pending > 0
           src << escape_text(text)
           src << "';"
