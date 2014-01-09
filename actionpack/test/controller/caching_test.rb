@@ -622,6 +622,19 @@ class FragmentCachingTest < ActionController::TestCase
     assert_equal 'generated till now -> fragment content', buffer
   end
 
+  def test_fragment_for_bytesize
+    buffer = "\xC4\x8D"
+    assert_equal Encoding::ASCII_8BIT, buffer.encoding
+
+    @controller.fragment_for(buffer, 'bytesize') do
+      buffer.force_encoding('UTF-8')
+      buffer << "abc"
+    end
+
+    assert_equal Encoding::UTF_8, buffer.encoding
+    assert_equal "abc", @store.read('views/bytesize')
+  end
+
   def test_html_safety
     assert_nil @store.read('views/name')
     content = 'value'.html_safe

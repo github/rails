@@ -39,9 +39,9 @@ module ActionController #:nodoc:
           if cache = read_fragment(name, options)
             buffer.safe_concat(cache.html_safe)
           else
-            pos = buffer.length
+            pos = buffer.bytesize
             block.call
-            write_fragment(name, buffer[pos..-1], options)
+            write_fragment(name, buffer.byteslice(pos..-1), options)
           end
         else
           block.call
