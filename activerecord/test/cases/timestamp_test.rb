@@ -149,7 +149,7 @@ class TimestampTest < ActiveRecord::TestCase
 
     pet = Pet.first
     owner = pet.owner
-    owner.update_attribute(:happy_at, (time = 3.days.ago))
+    owner.update_attribute(:happy_at, 3.days.ago)
     previously_owner_updated_at = owner.updated_at
 
     pet.name = "I'm a parrot"
@@ -167,12 +167,44 @@ class TimestampTest < ActiveRecord::TestCase
     toy = Toy.first
     pet = toy.pet
     owner = pet.owner
+    time = 3.days.ago
 
-    owner.update_attribute(:updated_at, (time = 3.days.ago))
+    owner.update_column(:updated_at, time)
     toy.touch
+    owner.reload
 
     assert_not_equal time, owner.updated_at
   ensure
     Toy.belongs_to :pet
+  end
+
+  def test_timestamp_attributes_for_create
+    toy = Toy.first
+    assert_equal toy.send(:timestamp_attributes_for_create), [:created_at, :created_on]
+  end
+
+  def test_timestamp_attributes_for_update
+    toy = Toy.first
+    assert_equal toy.send(:timestamp_attributes_for_update), [:updated_at, :updated_on]
+  end
+
+  def test_all_timestamp_attributes
+    toy = Toy.first
+    assert_equal toy.send(:all_timestamp_attributes), [:created_at, :created_on, :updated_at, :updated_on]
+  end
+
+  def test_timestamp_attributes_for_create_in_model
+    toy = Toy.first
+    assert_equal toy.send(:timestamp_attributes_for_create_in_model), [:created_at]
+  end
+
+  def test_timestamp_attributes_for_update_in_model
+    toy = Toy.first
+    assert_equal toy.send(:timestamp_attributes_for_update_in_model), [:updated_at]
+  end
+
+  def test_all_timestamp_attributes_in_model
+    toy = Toy.first
+    assert_equal toy.send(:all_timestamp_attributes_in_model), [:created_at, :updated_at]
   end
 end

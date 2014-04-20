@@ -24,12 +24,12 @@ PATH
     activemodel (3.0.20)
       activesupport (= 3.0.20)
       builder (~> 3.2.0)
-      i18n (~> 0.6.0)
+      i18n (~> 0.6)
     activerecord (3.0.20)
       activemodel (= 3.0.20)
       activesupport (= 3.0.20)
-      arel (~> 2.0.10)
-      tzinfo (~> 0.3.23)
+      arel (~> 2.2.3)
+      tzinfo (~> 0.3.29)
     activeresource (3.0.20)
       activemodel (= 3.0.20)
       activesupport (= 3.0.20)
@@ -53,7 +53,8 @@ GEM
   remote: http://rubygems.org/
   specs:
     addressable (2.3.6)
-    arel (2.0.10)
+    arel (2.2.3)
+    bcrypt-ruby (3.0.1)
     builder (3.2.2)
     coderay (1.1.0)
     erubis (2.7.0)
@@ -106,6 +107,7 @@ PLATFORMS
 DEPENDENCIES
   addressable
   arel
+  bcrypt-ruby (~> 3.0.0)
   faker
   horo (= 1.0.3)
   json

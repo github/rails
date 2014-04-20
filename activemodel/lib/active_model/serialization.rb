@@ -1,5 +1,7 @@
 require 'active_support/core_ext/hash/except'
 require 'active_support/core_ext/hash/slice'
+require 'active_support/core_ext/array/wrap'
+
 
 module ActiveModel
   # == Active Model Serialization
@@ -15,7 +17,7 @@ module ActiveModel
   #     attr_accessor :name
   #
   #     def attributes
-  #       @attributes ||= {'name' => 'nil'}
+  #       {'name' => name}
   #     end
   #
   #   end
@@ -45,7 +47,7 @@ module ActiveModel
   #     attr_accessor :name
   #
   #     def attributes
-  #       @attributes ||= {'name' => 'nil'}
+  #       {'name' => name}
   #     end
   #
   #   end
@@ -79,15 +81,8 @@ module ActiveModel
         attribute_names -= except
       end
 
-      method_names = Array.wrap(options[:methods]).inject([]) do |methods, name|
-        methods << name if respond_to?(name.to_s)
-        methods
-      end
-
-      (attribute_names + method_names).inject({}) { |hash, name|
-        hash[name] = send(name)
-        hash
-      }
+      method_names = Array.wrap(options[:methods]).map { |n| n if respond_to?(n.to_s) }.compact
+      Hash[(attribute_names + method_names).map { |n| [n, send(n)] }]
     end
   end
 end

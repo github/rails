@@ -1,73 +1,97 @@
 require 'singleton'
+require 'active_model/observer_array'
 require 'active_support/core_ext/array/wrap'
 require 'active_support/core_ext/module/aliasing'
 require 'active_support/core_ext/module/remove_method'
 require 'active_support/core_ext/string/inflections'
+require 'active_support/core_ext/enumerable'
+require 'active_support/descendants_tracker'
 
 module ActiveModel
   module Observing
     extend ActiveSupport::Concern
+
+    included do
+      extend ActiveSupport::DescendantsTracker
+    end
 
     module ClassMethods
       # == Active Model Observers Activation
       #
       # Activates the observers assigned. Examples:
       #
+      #   class ORM
+      #     include ActiveModel::Observing
+      #   end
+      #
       #   # Calls PersonObserver.instance
-      #   ActiveRecord::Base.observers = :person_observer
+      #   ORM.observers = :person_observer
       #
       #   # Calls Cacher.instance and GarbageCollector.instance
-      #   ActiveRecord::Base.observers = :cacher, :garbage_collector
+      #   ORM.observers = :cacher, :garbage_collector
       #
       #   # Same as above, just using explicit class references
-      #   ActiveRecord::Base.observers = Cacher, GarbageCollector
+      #   ORM.observers = Cacher, GarbageCollector
       #
       # Note: Setting this does not instantiate the observers yet.
       # +instantiate_observers+ is called during startup, and before
       # each development request.
       def observers=(*values)
-        @observers = values.flatten
+        observers.replace(values.flatten)
       end
 
-      # Gets the current observers.
+      # Gets an array of observers observing this model.
+      # The array also provides +enable+ and +disable+ methods
+      # that allow you to selectively enable and disable observers.
+      # (see <tt>ActiveModel::ObserverArray.enable</tt> and
+      # <tt>ActiveModel::ObserverArray.disable</tt> for more on this)
       def observers
-        @observers ||= []
+        @observers ||= ObserverArray.new(self)
       end
 
-      # Instantiate the global Active Record observers.
+      # Gets the current observer instances.
+      def observer_instances
+        @observer_instances ||= []
+      end
+
+      # Instantiate the global observers.
       def instantiate_observers
         observers.each { |o| instantiate_observer(o) }
       end
 
+      # Add a new observer to the pool.
+      # The new observer needs to respond to 'update', otherwise it
+      # raises an +ArgumentError+ exception.
       def add_observer(observer)
         unless observer.respond_to? :update
           raise ArgumentError, "observer needs to respond to `update'"
         end
-        @observer_instances ||= []
-        @observer_instances << observer
+        observer_instances << observer
       end
 
+      # Notify list of observers of a change.
       def notify_observers(*arg)
-        if defined? @observer_instances
-          for observer in @observer_instances
-            observer.update(*arg)
-          end
-        end
+        observer_instances.each { |observer| observer.update(*arg) }
       end
 
+      # Total number of observers.
       def count_observers
-        @observer_instances.size
+        observer_instances.size
       end
 
       protected
         def instantiate_observer(observer) #:nodoc:
           # string/symbol
           if observer.respond_to?(:to_sym)
-            observer = observer.to_s.camelize.constantize.instance
+            observer.to_s.camelize.constantize.instance
           elsif observer.respond_to?(:instance)
             observer.instance
           else
-            raise ArgumentError, "#{observer} must be a lowercase, underscored class name (or an instance of the class itself) responding to the instance method. Example: Person.observers = :big_brother # calls BigBrother.instance"
+            raise ArgumentError,
+              "#{observer} must be a lowercase, underscored class name (or an " +
+              "instance of the class itself) responding to the instance " +
+              "method. Example: Person.observers = :big_brother # calls " +
+              "BigBrother.instance"
           end
         end
 
@@ -101,7 +125,7 @@ module ActiveModel
   #
   #   class CommentObserver < ActiveModel::Observer
   #     def after_save(comment)
-  #       Notifications.deliver_comment("admin@do.com", "New comment was posted", comment)
+  #       Notifications.comment("admin@do.com", "New comment was posted", comment).deliver
   #     end
   #   end
   #
@@ -124,8 +148,8 @@ module ActiveModel
   # Observers will by default be mapped to the class with which they share a
   # name. So CommentObserver will be tied to observing Comment, ProductManagerObserver
   # to ProductManager, and so on. If you want to name your observer differently than
-  # the class you're interested in observing, you can use the Observer.observe class
-  # method which takes either the concrete class (Product) or a symbol for that
+  # the class you're interested in observing, you can use the <tt>Observer.observe</tt>
+  # class method which takes either the concrete class (Product) or a symbol for that
   # class (:product):
   #
   #   class AuditObserver < ActiveModel::Observer
@@ -150,8 +174,13 @@ module ActiveModel
   # The AuditObserver will now act on both updates to Account and Balance by treating
   # them both as records.
   #
+  # If you're using an Observer in a Rails application with Active Record, be sure to
+  # read about the necessary configuration in the documentation for
+  # ActiveRecord::Observer.
+  #
   class Observer
     include Singleton
+    extend ActiveSupport::DescendantsTracker
 
     class << self
       # Attaches the observer to the supplied model classes.
@@ -195,9 +224,12 @@ module ActiveModel
       self.class.observed_classes
     end
 
-    # Send observed_method(object) if the method exists.
-    def update(observed_method, object) #:nodoc:
-      send(observed_method, object) if respond_to?(observed_method)
+    # Send observed_method(object) if the method exists and
+    # the observer is enabled for the given object's class.
+    def update(observed_method, object, &block) #:nodoc:
+      return unless respond_to?(observed_method)
+      return if disabled_for?(object)
+      send(observed_method, object, &block)
     end
 
     # Special method sent by the observed class when it is inherited.
@@ -210,6 +242,12 @@ module ActiveModel
     protected
       def add_observer!(klass) #:nodoc:
         klass.add_observer(self)
+      end
+
+      def disabled_for?(object)
+        klass = object.class
+        return false unless klass.respond_to?(:observers)
+        klass.observers.disabled_for?(self)
       end
   end
 end

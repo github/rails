@@ -5,7 +5,6 @@ class SchemaTest < ActiveRecord::TestCase
 
   SCHEMA_NAME = 'test_schema'
   SCHEMA2_NAME = 'test_schema2'
-  SCHEMA3_NAME = 'foo'
   TABLE_NAME = 'things'
   CAPITALIZED_TABLE_NAME = 'Things'
   INDEX_A_NAME = 'a_index_things_on_name'
@@ -21,6 +20,9 @@ class SchemaTest < ActiveRecord::TestCase
     'email character varying(50)',
     'moment timestamp without time zone default now()'
   ]
+  PK_TABLE_NAME = 'table_with_pk'
+  UNMATCHED_SEQUENCE_NAME = 'unmatched_primary_key_default_value_seq'
+  UNMATCHED_PK_TABLE_NAME = 'table_with_unmatched_sequence_for_pk'
 
   class Thing1 < ActiveRecord::Base
     set_table_name "test_schema.things"
@@ -38,6 +40,10 @@ class SchemaTest < ActiveRecord::TestCase
     set_table_name 'test_schema."Things"'
   end
 
+  class Thing5 < ActiveRecord::Base
+    set_table_name 'things'
+  end
+
   def setup
     @connection = ActiveRecord::Base.connection
     @connection.execute "CREATE SCHEMA #{SCHEMA_NAME} CREATE TABLE #{TABLE_NAME} (#{COLUMNS.join(',')})"
@@ -50,13 +56,25 @@ class SchemaTest < ActiveRecord::TestCase
     @connection.execute "CREATE INDEX #{INDEX_B_NAME} ON #{SCHEMA2_NAME}.#{TABLE_NAME}  USING btree (#{INDEX_B_COLUMN_S2});"
     @connection.execute "CREATE INDEX #{INDEX_C_NAME} ON #{SCHEMA_NAME}.#{TABLE_NAME}  USING gin (#{INDEX_C_COLUMN});"
     @connection.execute "CREATE INDEX #{INDEX_C_NAME} ON #{SCHEMA2_NAME}.#{TABLE_NAME}  USING gin (#{INDEX_C_COLUMN});"
-    @connection.execute "CREATE SCHEMA #{SCHEMA3_NAME}"
+    @connection.execute "CREATE SEQUENCE #{SCHEMA_NAME}.#{UNMATCHED_SEQUENCE_NAME}"
+    @connection.execute "CREATE TABLE #{SCHEMA_NAME}.#{UNMATCHED_PK_TABLE_NAME} (id integer NOT NULL DEFAULT nextval('#{SCHEMA_NAME}.#{UNMATCHED_SEQUENCE_NAME}'::regclass), CONSTRAINT unmatched_pkey PRIMARY KEY (id))"
   end
 
   def teardown
     @connection.execute "DROP SCHEMA #{SCHEMA2_NAME} CASCADE"
     @connection.execute "DROP SCHEMA #{SCHEMA_NAME} CASCADE"
-    @connection.execute "DROP SCHEMA #{SCHEMA3_NAME}"
+  end
+
+  def test_schema_change_with_prepared_stmt
+    altered = false
+    @connection.exec_query "select * from developers where id = $1", 'sql', [[nil, 1]]
+    @connection.exec_query "alter table developers add column zomg int", 'sql', []
+    altered = true
+    @connection.exec_query "select * from developers where id = $1", 'sql', [[nil, 1]]
+  ensure
+    # We are not using DROP COLUMN IF EXISTS because that syntax is only
+    # supported by pg 9.X
+    @connection.exec_query("alter table developers drop column zomg", 'sql', []) if altered
   end
 
   def test_table_exists?
@@ -70,15 +88,9 @@ class SchemaTest < ActiveRecord::TestCase
     assert(!@connection.table_exists?("foo.things"), "table should not exist")
   end
 
-  def test_table_exists_wrong_search_path
-    with_schema_search_path SCHEMA3_NAME do
-      assert(!@connection.table_exists?("things"), "table should not exist")
-    end
-  end
-
   def test_table_exists_quoted_table
     with_schema_search_path(SCHEMA_NAME) do
-      assert(@connection.table_exists?('"things.table"'), "table should exist")
+        assert(@connection.table_exists?('"things.table"'), "table should exist")
     end
   end
 
@@ -165,6 +177,10 @@ class SchemaTest < ActiveRecord::TestCase
     do_dump_index_tests_for_schema(SCHEMA2_NAME, INDEX_A_COLUMN, INDEX_B_COLUMN_S2)
   end
 
+  def test_dump_indexes_for_schema_multiple_schemas_in_search_path
+    do_dump_index_tests_for_schema("public, #{SCHEMA_NAME}", INDEX_A_COLUMN, INDEX_B_COLUMN_S1)
+  end
+
   def test_with_uppercase_index_name
     ActiveRecord::Base.connection.execute "CREATE INDEX \"things_Index\" ON #{SCHEMA_NAME}.things (name)"
     assert_nothing_raised { ActiveRecord::Base.connection.remove_index! "things", "#{SCHEMA_NAME}.things_Index"}
@@ -173,6 +189,32 @@ class SchemaTest < ActiveRecord::TestCase
     ActiveRecord::Base.connection.schema_search_path = SCHEMA_NAME
     assert_nothing_raised { ActiveRecord::Base.connection.remove_index! "things", "things_Index"}
     ActiveRecord::Base.connection.schema_search_path = "public"
+  end
+
+  def test_pk_and_sequence_for_with_schema_specified
+    [
+      %("#{SCHEMA_NAME}"."#{UNMATCHED_PK_TABLE_NAME}")
+    ].each do |given|
+      pk, seq = @connection.pk_and_sequence_for(given)
+      assert_equal 'id', pk, "primary key should be found when table referenced as #{given}"
+      assert_equal "#{PK_TABLE_NAME}_id_seq", seq, "sequence name should be found when table referenced as #{given}" if given == %("#{SCHEMA_NAME}"."#{PK_TABLE_NAME}")
+      assert_equal "#{UNMATCHED_SEQUENCE_NAME}", seq, "sequence name should be found when table referenced as #{given}" if given ==  %("#{SCHEMA_NAME}"."#{UNMATCHED_PK_TABLE_NAME}")
+    end
+  end
+
+  def test_prepared_statements_with_multiple_schemas
+
+    @connection.schema_search_path = SCHEMA_NAME
+    Thing5.create(:id => 1, :name => "thing inside #{SCHEMA_NAME}", :email => "thing1@localhost", :moment => Time.now)
+
+    @connection.schema_search_path = SCHEMA2_NAME
+    Thing5.create(:id => 1, :name => "thing inside #{SCHEMA2_NAME}", :email => "thing1@localhost", :moment => Time.now)
+
+    @connection.schema_search_path = SCHEMA_NAME
+    assert_equal 1, Thing5.count
+
+    @connection.schema_search_path = SCHEMA2_NAME
+    assert_equal 1, Thing5.count
   end
 
   private

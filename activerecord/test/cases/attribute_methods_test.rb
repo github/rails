@@ -1,4 +1,5 @@
 require "cases/helper"
+require 'active_support/core_ext/object/inclusion'
 require 'models/minimalistic'
 require 'models/developer'
 require 'models/auto_id'
@@ -8,6 +9,7 @@ require 'models/topic'
 require 'models/company'
 require 'models/category'
 require 'models/reply'
+require 'models/contact'
 require 'models/keyboard'
 
 class AttributeMethodsTest < ActiveRecord::TestCase
@@ -31,6 +33,12 @@ class AttributeMethodsTest < ActiveRecord::TestCase
     assert t.attribute_present?("title")
     assert t.attribute_present?("written_on")
     assert !t.attribute_present?("content")
+  end
+
+  def test_caching_nil_primary_key
+    klass = Class.new(Minimalistic)
+    klass.expects(:reset_primary_key).returns(nil).once
+    2.times { klass.primary_key }
   end
 
   def test_attribute_keys_on_new_instance
@@ -74,8 +82,6 @@ class AttributeMethodsTest < ActiveRecord::TestCase
   end
 
   def test_respond_to?
-    skip "failed already"
-
     topic = Topic.find(1)
     assert_respond_to topic, "title"
     assert_respond_to topic, "_title"
@@ -91,8 +97,6 @@ class AttributeMethodsTest < ActiveRecord::TestCase
   end
 
   def test_respond_to_with_custom_primary_key
-    skip "failed already"
-
     keyboard = Keyboard.create
     assert_not_nil keyboard.key_number
     assert_equal keyboard.key_number, keyboard.id
@@ -121,7 +125,7 @@ class AttributeMethodsTest < ActiveRecord::TestCase
 
   def test_read_attributes_before_type_cast
     category = Category.new({:name=>"Test categoty", :type => nil})
-    category_attrs = {"name"=>"Test categoty", "type" => nil, "categorizations_count" => nil}
+    category_attrs = {"name"=>"Test categoty", "id" => nil, "type" => nil, "categorizations_count" => nil}
     assert_equal category_attrs , category.attributes_before_type_cast
   end
 
@@ -129,17 +133,15 @@ class AttributeMethodsTest < ActiveRecord::TestCase
     def test_read_attributes_before_type_cast_on_boolean
       bool = Boolean.create({ "value" => false })
       if RUBY_PLATFORM =~ /java/
-        #JRuby will returns the value before typecast as integer
-        assert_equal 0, bool.reload.attributes_before_type_cast["value"]
-      else
+        # JRuby will return the value before typecast as string
         assert_equal "0", bool.reload.attributes_before_type_cast["value"]
+      else
+        assert_equal 0, bool.reload.attributes_before_type_cast["value"]
       end
     end
   end
 
   def test_read_attributes_before_type_cast_on_datetime
-    skip "failed already"
-
     in_time_zone "Pacific Time (US & Canada)" do
       record = @target.new
 
@@ -155,8 +157,6 @@ class AttributeMethodsTest < ActiveRecord::TestCase
   end
 
   def test_read_attributes_after_type_cast_on_datetime
-    skip "failed already"
-
     tz = "Pacific Time (US & Canada)"
 
     in_time_zone tz do
@@ -234,8 +234,14 @@ class AttributeMethodsTest < ActiveRecord::TestCase
     topic.send(:write_attribute, :title, "Still another topic")
     assert_equal "Still another topic", topic.title
 
-    topic.send(:write_attribute, "title", "Still another topic: part 2")
+    topic[:title] = "Still another topic: part 2"
     assert_equal "Still another topic: part 2", topic.title
+
+    topic.send(:write_attribute, "title", "Still another topic: part 3")
+    assert_equal "Still another topic: part 3", topic.title
+
+    topic["title"] = "Still another topic: part 4"
+    assert_equal "Still another topic: part 4", topic.title
   end
 
   def test_read_attribute
@@ -286,6 +292,45 @@ class AttributeMethodsTest < ActiveRecord::TestCase
     # puts topic.inspect
     assert topic.approved?, "approved should be true"
     # puts ""
+  end
+
+  def test_overridden_write_attribute
+    topic = Topic.new
+    def topic.write_attribute(attr_name, value)
+      super(attr_name, value.downcase)
+    end
+
+    topic.send(:write_attribute, :title, "Yet another topic")
+    assert_equal "yet another topic", topic.title
+
+    topic[:title] = "Yet another topic: part 2"
+    assert_equal "yet another topic: part 2", topic.title
+
+    topic.send(:write_attribute, "title", "Yet another topic: part 3")
+    assert_equal "yet another topic: part 3", topic.title
+
+    topic["title"] = "Yet another topic: part 4"
+    assert_equal "yet another topic: part 4", topic.title
+  end
+
+  def test_overridden_read_attribute
+    topic = Topic.new
+    topic.title = "Stop changing the topic"
+    def topic.read_attribute(attr_name)
+      super(attr_name).upcase
+    end
+
+    assert_equal "STOP CHANGING THE TOPIC", topic.send(:read_attribute, "title")
+    assert_equal "STOP CHANGING THE TOPIC", topic["title"]
+
+    assert_equal "STOP CHANGING THE TOPIC", topic.send(:read_attribute, :title)
+    assert_equal "STOP CHANGING THE TOPIC", topic[:title]
+  end
+
+  def test_read_overridden_attribute
+    topic = Topic.new(:title => 'a')
+    def topic.title() 'b' end
+    assert_equal 'a', topic[:title]
   end
 
   def test_query_attribute_string
@@ -469,17 +514,11 @@ class AttributeMethodsTest < ActiveRecord::TestCase
     Topic.instance_variable_set "@cached_attributes", nil
   end
 
-  def test_time_related_columns_are_actually_cached
-    column_types = %w(datetime timestamp time date).map(&:to_sym)
-    column_names = Topic.columns.select{|c| column_types.include?(c.type) }.map(&:name)
-
-    assert_equal column_names.sort, Topic.cached_attributes.sort
-    assert_equal time_related_columns_on_topic.sort, Topic.cached_attributes.sort
+  def test_cacheable_columns_are_actually_cached
+    assert_equal cached_columns.sort, Topic.cached_attributes.sort
   end
 
   def test_accessing_cached_attributes_caches_the_converted_values_and_nothing_else
-    skip "failed already"
-
     t = topics(:first)
     cache = t.instance_variable_get "@attributes_cache"
 
@@ -487,8 +526,7 @@ class AttributeMethodsTest < ActiveRecord::TestCase
     assert cache.empty?
 
     all_columns = Topic.columns.map(&:name)
-    cached_columns = time_related_columns_on_topic
-    uncached_columns =  all_columns - cached_columns
+    uncached_columns = all_columns - cached_columns
 
     all_columns.each do |attr_name|
       attribute_gets_cached = Topic.cache_attribute?(attr_name)
@@ -512,8 +550,6 @@ class AttributeMethodsTest < ActiveRecord::TestCase
   end
 
   def test_time_attributes_are_retrieved_in_current_time_zone
-    skip "failed already"
-
     in_time_zone "Pacific Time (US & Canada)" do
       utc_time = Time.utc(2008, 1, 1)
       record   = @target.new
@@ -526,8 +562,6 @@ class AttributeMethodsTest < ActiveRecord::TestCase
   end
 
   def test_setting_time_zone_aware_attribute_to_utc
-    skip "failed already"
-
     in_time_zone "Pacific Time (US & Canada)" do
       utc_time = Time.utc(2008, 1, 1)
       record   = @target.new
@@ -539,8 +573,6 @@ class AttributeMethodsTest < ActiveRecord::TestCase
   end
 
   def test_setting_time_zone_aware_attribute_in_other_time_zone
-    skip "failed already"
-
     utc_time = Time.utc(2008, 1, 1)
     cst_time = utc_time.in_time_zone("Central Time (US & Canada)")
     in_time_zone "Pacific Time (US & Canada)" do
@@ -553,8 +585,6 @@ class AttributeMethodsTest < ActiveRecord::TestCase
   end
 
   def test_setting_time_zone_aware_attribute_with_string
-    skip "failed already"
-
     utc_time = Time.utc(2008, 1, 1)
     (-11..13).each do |timezone_offset|
       time_string = utc_time.in_time_zone(timezone_offset).to_s
@@ -577,8 +607,6 @@ class AttributeMethodsTest < ActiveRecord::TestCase
   end
 
   def test_setting_time_zone_aware_attribute_interprets_time_zone_unaware_string_in_time_zone
-    skip "failed already"
-
     time_string = 'Tue Jan 01 00:00:00 2008'
     (-11..13).each do |timezone_offset|
       in_time_zone timezone_offset do
@@ -616,7 +644,7 @@ class AttributeMethodsTest < ActiveRecord::TestCase
     topic = @target.new(:title => "The pros and cons of programming naked.")
     assert !topic.respond_to?(:title)
     exception = assert_raise(NoMethodError) { topic.title }
-    assert_equal "Attempt to call private method", exception.message
+    assert_match %r(^Attempt to call private method), exception.message
     assert_equal "I'm private", topic.send(:title)
   end
 
@@ -626,7 +654,7 @@ class AttributeMethodsTest < ActiveRecord::TestCase
     topic = @target.new
     assert !topic.respond_to?(:title=)
     exception = assert_raise(NoMethodError) { topic.title = "Pants"}
-    assert_equal "Attempt to call private method", exception.message
+    assert_match %r(^Attempt to call private method), exception.message
     topic.send(:title=, "Very large pants")
   end
 
@@ -636,14 +664,14 @@ class AttributeMethodsTest < ActiveRecord::TestCase
     topic = @target.new(:title => "Isaac Newton's pants")
     assert !topic.respond_to?(:title?)
     exception = assert_raise(NoMethodError) { topic.title? }
-    assert_equal "Attempt to call private method", exception.message
+    assert_match %r(^Attempt to call private method), exception.message
     assert topic.send(:title?)
   end
 
   def test_bulk_update_respects_access_control
     privatize("title=(value)")
 
-    assert_raise(ActiveRecord::UnknownAttributeError) { topic = @target.new(:title => "Rants about pants") }
+    assert_raise(ActiveRecord::UnknownAttributeError) { @target.new(:title => "Rants about pants") }
     assert_raise(ActiveRecord::UnknownAttributeError) { @target.new.attributes = { :title => "Ants in pants" } }
   end
 
@@ -662,10 +690,22 @@ class AttributeMethodsTest < ActiveRecord::TestCase
     Object.send(:undef_method, :title) # remove test method from object
   end
 
+  def test_list_of_serialized_attributes
+    assert_equal %w(content), Topic.serialized_attributes.keys
+    assert_equal %w(preferences), Contact.serialized_attributes.keys
+  end
 
   private
+  def cached_columns
+    @cached_columns ||= (time_related_columns_on_topic + serialized_columns_on_topic).map(&:name)
+  end
+
   def time_related_columns_on_topic
-    Topic.columns.select{|c| [:time, :date, :datetime, :timestamp].include?(c.type)}.map(&:name)
+    Topic.columns.select { |c| c.type.in?([:time, :date, :datetime, :timestamp]) }
+  end
+
+  def serialized_columns_on_topic
+    Topic.columns.select { |c| Topic.serialized_attributes.include?(c.name) }
   end
 
   def in_time_zone(zone)

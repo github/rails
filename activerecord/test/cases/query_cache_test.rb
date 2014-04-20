@@ -10,15 +10,111 @@ class QueryCacheTest < ActiveRecord::TestCase
 
   def setup
     Task.connection.clear_query_cache
+    ActiveRecord::Base.connection.disable_query_cache!
+  end
+
+  def test_exceptional_middleware_clears_and_disables_cache_on_error
+    assert !ActiveRecord::Base.connection.query_cache_enabled, 'cache off'
+
+    mw = ActiveRecord::QueryCache.new lambda { |env|
+      Task.find 1
+      Task.find 1
+      assert_equal 1, ActiveRecord::Base.connection.query_cache.length
+      raise "lol borked"
+    }
+    assert_raises(RuntimeError) { mw.call({}) }
+
+    assert_equal 0, ActiveRecord::Base.connection.query_cache.length
+    assert !ActiveRecord::Base.connection.query_cache_enabled, 'cache off'
+  end
+
+  def test_exceptional_middleware_leaves_enabled_cache_alone
+    ActiveRecord::Base.connection.enable_query_cache!
+
+    mw = ActiveRecord::QueryCache.new lambda { |env|
+      raise "lol borked"
+    }
+    assert_raises(RuntimeError) { mw.call({}) }
+
+    assert ActiveRecord::Base.connection.query_cache_enabled, 'cache on'
+  end
+
+  def test_middleware_delegates
+    called = false
+    mw = ActiveRecord::QueryCache.new lambda { |env|
+      called = true
+    }
+    mw.call({})
+    assert called, 'middleware should delegate'
+  end
+
+  def test_middleware_caches
+    mw = ActiveRecord::QueryCache.new lambda { |env|
+      Task.find 1
+      Task.find 1
+      assert_equal 1, ActiveRecord::Base.connection.query_cache.length
+    }
+    mw.call({})
+  end
+
+  def test_cache_enabled_during_call
+    assert !ActiveRecord::Base.connection.query_cache_enabled, 'cache off'
+
+    mw = ActiveRecord::QueryCache.new lambda { |env|
+      assert ActiveRecord::Base.connection.query_cache_enabled, 'cache on'
+    }
+    mw.call({})
+  end
+
+  def test_cache_on_during_body_write
+    streaming = Class.new do
+      def each
+        yield ActiveRecord::Base.connection.query_cache_enabled
+      end
+    end
+
+    mw = ActiveRecord::QueryCache.new lambda { |env|
+      [200, {}, streaming.new]
+    }
+    body = mw.call({}).last
+    body.each { |x| assert x, 'cache should be on' }
+    body.close
+    assert !ActiveRecord::Base.connection.query_cache_enabled, 'cache disabled'
+  end
+
+  def test_cache_off_after_close
+    mw = ActiveRecord::QueryCache.new lambda { |env| }
+    body = mw.call({}).last
+
+    assert ActiveRecord::Base.connection.query_cache_enabled, 'cache enabled'
+    body.close
+    assert !ActiveRecord::Base.connection.query_cache_enabled, 'cache disabled'
+  end
+
+  def test_cache_clear_after_close
+    mw = ActiveRecord::QueryCache.new lambda { |env|
+      Post.find(:first)
+    }
+    body = mw.call({}).last
+
+    assert !ActiveRecord::Base.connection.query_cache.empty?, 'cache not empty'
+    body.close
+    assert ActiveRecord::Base.connection.query_cache.empty?, 'cache should be empty'
   end
 
   def test_find_queries
-    assert_queries(2) { Task.find(1); Task.find(1) }
+    assert_queries(ActiveRecord::IdentityMap.enabled? ? 1 : 2) { Task.find(1); Task.find(1) }
   end
 
   def test_find_queries_with_cache
     Task.cache do
       assert_queries(1) { Task.find(1); Task.find(1) }
+    end
+  end
+
+  def test_find_queries_with_cache_multi_record
+    Task.cache do
+      assert_queries(2) { Task.find(1); Task.find(1); Task.find(2) }
     end
   end
 
@@ -51,21 +147,17 @@ class QueryCacheTest < ActiveRecord::TestCase
   end
 
   def test_cache_does_not_wrap_string_results_in_arrays
-    require 'sqlite3/version' if current_adapter?(:SQLite3Adapter) && !(RUBY_PLATFORM =~ /java/)
+    if current_adapter?(:SQLite3Adapter)
+      require 'sqlite3/version'
+      sqlite3_version = RUBY_PLATFORM =~ /java/ ? Jdbc::SQLite3::VERSION : SQLite3::VERSION
+    end
 
     Task.cache do
       # Oracle adapter returns count() as Fixnum or Float
       if current_adapter?(:OracleAdapter)
         assert_kind_of Numeric, Task.connection.select_value("SELECT count(*) AS count_all FROM tasks")
-      elsif !(RUBY_PLATFORM =~ /java/) &&
-          ((current_adapter?(:SQLite3Adapter) && SQLite3::VERSION > '1.2.5') or
-          current_adapter?(:Mysql2Adapter))
+      elsif current_adapter?(:SQLite3Adapter) && sqlite3_version > '1.2.5' || current_adapter?(:Mysql2Adapter) || current_adapter?(:MysqlAdapter)
         # Future versions of the sqlite3 adapter will return numeric
-        assert_instance_of Fixnum,
-         Task.connection.select_value("SELECT count(*) AS count_all FROM tasks")
-      elsif (RUBY_PLATFORM =~ /java/) &&
-          ((current_adapter?(:SQLite3Adapter)) or
-          current_adapter?(:MysqlAdapter))
         assert_instance_of Fixnum,
          Task.connection.select_value("SELECT count(*) AS count_all FROM tasks")
       else
@@ -77,6 +169,18 @@ end
 
 class QueryCacheExpiryTest < ActiveRecord::TestCase
   fixtures :tasks, :posts, :categories, :categories_posts
+
+  def test_cache_gets_cleared_after_migration
+    # warm the cache
+    Post.find(1)
+
+    # change the column definition
+    Post.connection.change_column :posts, :title, :string, :limit => 80
+    assert_nothing_raised { Post.find(1) }
+
+    # restore the old definition
+    Post.connection.change_column :posts, :title, :string
+  end
 
   def test_find
     Task.connection.expects(:clear_query_cache).times(1)
@@ -134,10 +238,20 @@ class QueryCacheExpiryTest < ActiveRecord::TestCase
   def test_cache_is_expired_by_habtm_delete
     ActiveRecord::Base.connection.expects(:clear_query_cache).times(2)
     ActiveRecord::Base.cache do
-      c = Category.find(1)
       p = Post.find(1)
       assert p.categories.any?
       p.categories.delete_all
     end
   end
+end
+
+class QueryCacheBodyProxyTest < ActiveRecord::TestCase
+
+  test "is polite to it's body and responds to it" do
+    body = Class.new(String) { def to_path; "/path"; end }.new
+    proxy = ActiveRecord::QueryCache::BodyProxy.new(nil, body, ActiveRecord::Base.connection_id)
+    assert proxy.respond_to?(:to_path)
+    assert_equal proxy.to_path, "/path"
+  end
+
 end

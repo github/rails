@@ -36,8 +36,8 @@ class FixturesTest < ActiveRecord::TestCase
   def test_clean_fixtures
     FIXTURES.each do |name|
       fixtures = nil
-      assert_nothing_raised { fixtures = create_fixtures(name) }
-      assert_kind_of(Fixtures, fixtures)
+      assert_nothing_raised { fixtures = create_fixtures(name).first }
+      assert_kind_of(ActiveRecord::Fixtures, fixtures)
       fixtures.each { |_name, fixture|
         fixture.each { |key, value|
           assert_match(MATCH_ATTRIBUTE_NAME, key)
@@ -53,29 +53,34 @@ class FixturesTest < ActiveRecord::TestCase
 
     dir  = File.dirname badyaml.path
     name = File.basename badyaml.path, '.yml'
-    assert_raises(Fixture::FormatError) do
-      ::Fixtures.create_fixtures(dir, name)
+    assert_raises(ActiveRecord::Fixture::FormatError) do
+      ActiveRecord::Fixtures.create_fixtures(dir, name)
     end
   ensure
     badyaml.close
     badyaml.unlink
   end
 
+  def test_create_fixtures
+    ActiveRecord::Fixtures.create_fixtures(FIXTURES_ROOT, "parrots")
+    assert Parrot.find_by_name('Curious George'), 'George is in the database'
+  end
+
   def test_multiple_clean_fixtures
     fixtures_array = nil
     assert_nothing_raised { fixtures_array = create_fixtures(*FIXTURES) }
     assert_kind_of(Array, fixtures_array)
-    fixtures_array.each { |fixtures| assert_kind_of(Fixtures, fixtures) }
+    fixtures_array.each { |fixtures| assert_kind_of(ActiveRecord::Fixtures, fixtures) }
   end
 
   def test_attributes
-    topics = create_fixtures("topics")
+    topics = create_fixtures("topics").first
     assert_equal("The First Topic", topics["first"]["title"])
     assert_nil(topics["second"]["author_email_address"])
   end
 
   def test_inserts
-    topics = create_fixtures("topics")
+    create_fixtures("topics")
     first_row = ActiveRecord::Base.connection.select_one("SELECT * FROM topics WHERE author_name = 'David'")
     assert_equal("The First Topic", first_row["title"])
 
@@ -86,7 +91,7 @@ class FixturesTest < ActiveRecord::TestCase
   if ActiveRecord::Base.connection.supports_migrations?
     def test_inserts_with_pre_and_suffix
       # Reset cache to make finds on the new table work
-      Fixtures.reset_cache
+      ActiveRecord::Fixtures.reset_cache
 
       ActiveRecord::Base.connection.create_table :prefix_topics_suffix do |t|
         t.column :title, :string
@@ -131,7 +136,7 @@ class FixturesTest < ActiveRecord::TestCase
   end
 
   def test_insert_with_datetime
-    topics = create_fixtures("tasks")
+    create_fixtures("tasks")
     first = Task.find(1)
     assert first
   end
@@ -143,12 +148,11 @@ class FixturesTest < ActiveRecord::TestCase
   end
 
   def test_instantiation
-    topics = create_fixtures("topics")
+    topics = create_fixtures("topics").first
     assert_kind_of Topic, topics["first"].find
   end
 
   def test_complete_instantiation
-    assert_equal 4, @topics.size
     assert_equal "The First Topic", @first.title
   end
 
@@ -158,16 +162,15 @@ class FixturesTest < ActiveRecord::TestCase
   end
 
   def test_erb_in_fixtures
-    assert_equal 11, @developers.size
     assert_equal "fixture_5", @dev_5.name
   end
 
   def test_empty_yaml_fixture
-    assert_not_nil Fixtures.new( Account.connection, "accounts", 'Account', FIXTURES_ROOT + "/naked/yml/accounts")
+    assert_not_nil ActiveRecord::Fixtures.new( Account.connection, "accounts", 'Account', FIXTURES_ROOT + "/naked/yml/accounts")
   end
 
   def test_empty_yaml_fixture_with_a_comment_in_it
-    assert_not_nil Fixtures.new( Account.connection, "companies", 'Company', FIXTURES_ROOT + "/naked/yml/companies")
+    assert_not_nil ActiveRecord::Fixtures.new( Account.connection, "companies", 'Company', FIXTURES_ROOT + "/naked/yml/companies")
   end
 
   def test_nonexistent_fixture_file
@@ -177,23 +180,25 @@ class FixturesTest < ActiveRecord::TestCase
     assert Dir[nonexistent_fixture_path+"*"].empty?
 
     assert_raise(FixturesFileNotFound) do
-      Fixtures.new( Account.connection, "companies", 'Company', nonexistent_fixture_path)
+      ActiveRecord::Fixtures.new( Account.connection, "companies", 'Company', nonexistent_fixture_path)
     end
   end
 
   def test_dirty_dirty_yaml_file
-    assert_raise(Fixture::FormatError) do
-      Fixtures.new( Account.connection, "courses", 'Course', FIXTURES_ROOT + "/naked/yml/courses")
+    assert_raise(ActiveRecord::Fixture::FormatError) do
+      ActiveRecord::Fixtures.new( Account.connection, "courses", 'Course', FIXTURES_ROOT + "/naked/yml/courses")
     end
   end
 
   def test_empty_csv_fixtures
-    assert_not_nil Fixtures.new( Account.connection, "accounts", 'Account', FIXTURES_ROOT + "/naked/csv/accounts")
+    assert_deprecated do
+      assert_not_nil ActiveRecord::Fixtures.new( Account.connection, "accounts", 'Account', FIXTURES_ROOT + "/naked/csv/accounts")
+    end
   end
 
   def test_omap_fixtures
     assert_nothing_raised do
-      fixtures = Fixtures.new(Account.connection, 'categories', 'Category', FIXTURES_ROOT + "/categories_ordered")
+      fixtures = ActiveRecord::Fixtures.new(Account.connection, 'categories', 'Category', FIXTURES_ROOT + "/categories_ordered")
 
       i = 0
       fixtures.each do |name, fixture|
@@ -215,7 +220,6 @@ class FixturesTest < ActiveRecord::TestCase
   end
 
   def test_binary_in_fixtures
-    assert_equal 1, @binaries.size
     data = File.open(ASSETS_ROOT + "/flowers.jpg", 'rb') { |f| f.read }
     data.force_encoding('ASCII-8BIT') if data.respond_to?(:force_encoding)
     data.freeze
@@ -234,7 +238,7 @@ if Account.connection.respond_to?(:reset_pk_sequence!)
 
     def setup
       @instances = [Account.new(:credit_limit => 50), Company.new(:name => 'RoR Consulting')]
-      Fixtures.reset_cache # make sure tables get reinitialized
+      ActiveRecord::Fixtures.reset_cache # make sure tables get reinitialized
     end
 
     def test_resets_to_min_pk_with_specified_pk_and_sequence
@@ -261,7 +265,7 @@ if Account.connection.respond_to?(:reset_pk_sequence!)
 
     def test_create_fixtures_resets_sequences_when_not_cached
       @instances.each do |instance|
-        max_id = create_fixtures(instance.class.table_name).inject(0) do |_max_id, (name, fixture)|
+        max_id = create_fixtures(instance.class.table_name).first.fixtures.inject(0) do |_max_id, (_, fixture)|
           fixture_id = fixture['id'].to_i
           fixture_id > _max_id ? fixture_id : _max_id
         end
@@ -320,9 +324,6 @@ class FixturesWithoutInstanceInstantiationTest < ActiveRecord::TestCase
 
   def test_without_instance_instantiation
     assert !defined?(@first), "@first is not defined"
-    assert_not_nil @topics
-    assert_not_nil @developers
-    assert_not_nil @accounts
   end
 end
 
@@ -397,6 +398,21 @@ class ForeignKeyFixturesTest < ActiveRecord::TestCase
 
   def test_number2
     assert true
+  end
+end
+
+class OverRideFixtureMethodTest < ActiveRecord::TestCase
+  fixtures :topics
+
+  def topics(name)
+    topic = super
+    topic.title = 'omg'
+    topic
+  end
+
+  def test_fixture_methods_can_be_overridden
+    x = topics :first
+    assert_equal 'omg', x.title
   end
 end
 
@@ -525,14 +541,14 @@ class FasterFixturesTest < ActiveRecord::TestCase
   fixtures :categories, :authors
 
   def load_extra_fixture(name)
-    fixture = create_fixtures(name)
-    assert fixture.is_a?(Fixtures)
+    fixture = create_fixtures(name).first
+    assert fixture.is_a?(ActiveRecord::Fixtures)
     @loaded_fixtures[fixture.table_name] = fixture
   end
 
   def test_cache
-    assert Fixtures.fixture_is_cached?(ActiveRecord::Base.connection, 'categories')
-    assert Fixtures.fixture_is_cached?(ActiveRecord::Base.connection, 'authors')
+    assert ActiveRecord::Fixtures.fixture_is_cached?(ActiveRecord::Base.connection, 'categories')
+    assert ActiveRecord::Fixtures.fixture_is_cached?(ActiveRecord::Base.connection, 'authors')
 
     assert_no_queries do
       create_fixtures('categories')
@@ -540,7 +556,7 @@ class FasterFixturesTest < ActiveRecord::TestCase
     end
 
     load_extra_fixture('posts')
-    assert Fixtures.fixture_is_cached?(ActiveRecord::Base.connection, 'posts')
+    assert ActiveRecord::Fixtures.fixture_is_cached?(ActiveRecord::Base.connection, 'posts')
     self.class.setup_fixture_accessors('posts')
     assert_equal 'Welcome to the weblog', posts(:welcome).title
   end
@@ -550,17 +566,17 @@ class FoxyFixturesTest < ActiveRecord::TestCase
   fixtures :parrots, :parrots_pirates, :pirates, :treasures, :mateys, :ships, :computers, :developers, :"admin/accounts", :"admin/users"
 
   def test_identifies_strings
-    assert_equal(Fixtures.identify("foo"), Fixtures.identify("foo"))
-    assert_not_equal(Fixtures.identify("foo"), Fixtures.identify("FOO"))
+    assert_equal(ActiveRecord::Fixtures.identify("foo"), ActiveRecord::Fixtures.identify("foo"))
+    assert_not_equal(ActiveRecord::Fixtures.identify("foo"), ActiveRecord::Fixtures.identify("FOO"))
   end
 
   def test_identifies_symbols
-    assert_equal(Fixtures.identify(:foo), Fixtures.identify(:foo))
+    assert_equal(ActiveRecord::Fixtures.identify(:foo), ActiveRecord::Fixtures.identify(:foo))
   end
 
   def test_identifies_consistently
-    assert_equal 207281424, Fixtures.identify(:ruby)
-    assert_equal 1066363776, Fixtures.identify(:sapphire_2)
+    assert_equal 207281424, ActiveRecord::Fixtures.identify(:ruby)
+    assert_equal 1066363776, ActiveRecord::Fixtures.identify(:sapphire_2)
   end
 
   TIMESTAMP_COLUMNS = %w(created_at created_on updated_at updated_on)

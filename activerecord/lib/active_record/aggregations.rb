@@ -4,9 +4,7 @@ module ActiveRecord
     extend ActiveSupport::Concern
 
     def clear_aggregation_cache #:nodoc:
-      self.class.reflect_on_all_aggregations.to_a.each do |assoc|
-        instance_variable_set "@#{assoc.name}", nil
-      end unless self.new_record?
+      @aggregation_cache.clear if persisted?
     end
 
     # Active Record implements aggregation through a macro-like class method called +composed_of+
@@ -174,8 +172,8 @@ module ActiveRecord
       #   with this option.
       # * <tt>:mapping</tt> - Specifies the mapping of entity attributes to attributes of the value
       #   object. Each mapping is represented as an array where the first item is the name of the
-      #   entity attribute and the second item is the name the attribute in the value object. The
-      #   order in which mappings are defined determine the order in which attributes are sent to the
+      #   entity attribute and the second item is the name of the attribute in the value object. The
+      #   order in which mappings are defined determines the order in which attributes are sent to the
       #   value class constructor.
       # * <tt>:allow_nil</tt> - Specifies that the value object will not be instantiated when all mapped
       #   attributes are +nil+.  Setting the value object to +nil+ has the effect of writing +nil+ to all
@@ -193,7 +191,8 @@ module ActiveRecord
       #
       # Option examples:
       #   composed_of :temperature, :mapping => %w(reading celsius)
-      #   composed_of :balance, :class_name => "Money", :mapping => %w(balance amount), :converter => Proc.new { |balance| balance.to_money }
+      #   composed_of :balance, :class_name => "Money", :mapping => %w(balance amount),
+      #                         :converter => Proc.new { |balance| balance.to_money }
       #   composed_of :address, :mapping => [ %w(address_street street), %w(address_city city) ]
       #   composed_of :gps_location
       #   composed_of :gps_location, :allow_nil => true
@@ -222,53 +221,32 @@ module ActiveRecord
 
       private
         def reader_method(name, class_name, mapping, allow_nil, constructor)
-          module_eval do
-            define_method(name) do |*args|
-              force_reload = args.first || false
-
-              unless instance_variable_defined?("@#{name}")
-                instance_variable_set("@#{name}", nil)
-              end
-
-              if (instance_variable_get("@#{name}").nil? || force_reload) && (!allow_nil || mapping.any? {|pair| !read_attribute(pair.first).nil? })
-                attrs = mapping.collect {|pair| read_attribute(pair.first)}
-                object = case constructor
-                  when Symbol
-                    class_name.constantize.send(constructor, *attrs)
-                  when Proc, Method
-                    constructor.call(*attrs)
-                  else
-                    raise ArgumentError, 'Constructor must be a symbol denoting the constructor method to call or a Proc to be invoked.'
-                  end
-                instance_variable_set("@#{name}", object)
-              end
-              instance_variable_get("@#{name}")
+          define_method(name) do
+            if @aggregation_cache[name].nil? && (!allow_nil || mapping.any? {|pair| !read_attribute(pair.first).nil? })
+              attrs = mapping.collect {|pair| read_attribute(pair.first)}
+              object = constructor.respond_to?(:call) ?
+                constructor.call(*attrs) :
+                class_name.constantize.send(constructor, *attrs)
+              @aggregation_cache[name] = object
             end
+            @aggregation_cache[name]
           end
-
         end
 
         def writer_method(name, class_name, mapping, allow_nil, converter)
-          module_eval do
-            define_method("#{name}=") do |part|
-              if part.nil? && allow_nil
-                mapping.each { |pair| self[pair.first] = nil }
-                instance_variable_set("@#{name}", nil)
-              else
-                unless part.is_a?(class_name.constantize) || converter.nil?
-                  part = case converter
-                    when Symbol
-                     class_name.constantize.send(converter, part)
-                    when Proc, Method
-                      converter.call(part)
-                    else
-                      raise ArgumentError, 'Converter must be a symbol denoting the converter method to call or a Proc to be invoked.'
-                    end
-                end
-
-                mapping.each { |pair| self[pair.first] = part.send(pair.last) }
-                instance_variable_set("@#{name}", part.freeze)
+          define_method("#{name}=") do |part|
+            if part.nil? && allow_nil
+              mapping.each { |pair| self[pair.first] = nil }
+              @aggregation_cache[name] = nil
+            else
+              unless part.is_a?(class_name.constantize) || converter.nil?
+                part = converter.respond_to?(:call) ?
+                  converter.call(part) :
+                  class_name.constantize.send(converter, part)
               end
+
+              mapping.each { |pair| self[pair.first] = part.send(pair.last) }
+              @aggregation_cache[name] = part.freeze
             end
           end
         end

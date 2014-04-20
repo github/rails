@@ -1,27 +1,14 @@
-require "active_record/associations/through_association_scope"
 require 'active_support/core_ext/object/blank'
 
 module ActiveRecord
   # = Active Record Has Many Through Association
   module Associations
     class HasManyThroughAssociation < HasManyAssociation #:nodoc:
-      include ThroughAssociationScope
+      include ThroughAssociation
 
-      alias_method :new, :build
-
-      def create!(attrs = nil)
-        create_record(attrs, true)
-      end
-
-      def create(attrs = nil)
-        create_record(attrs, false)
-      end
-
-      def destroy(*records)
-        transaction do
-          delete_records(flatten_deeper(records))
-          super
-        end
+      def initialize(owner, reflection)
+        super
+        @through_records = {}
       end
 
       # Returns the size of the collection by executing a SELECT COUNT(*) query if the collection hasn't been
@@ -29,85 +16,160 @@ module ActiveRecord
       # have a size larger than zero, and you need to fetch that collection afterwards, it'll take one fewer
       # SELECT query if you use #length.
       def size
-        return @owner.send(:read_attribute, cached_counter_attribute_name) if has_cached_counter?
-        return @target.size if loaded?
-        return count
+        if has_cached_counter?
+          owner.send(:read_attribute, cached_counter_attribute_name)
+        elsif loaded?
+          target.size
+        else
+          count
+        end
       end
 
-      protected
-        def create_record(attrs, force = true)
-          ensure_owner_is_not_new
-
-          transaction do
-            object = @reflection.klass.new(attrs)
-            add_record_to_target_with_callbacks(object) {|r| insert_record(object, force) }
-            object
+      def concat(*records)
+        unless owner.new_record?
+          records.flatten.each do |record|
+            raise_on_type_mismatch(record)
+            record.save! if record.new_record?
           end
         end
 
+        super
+      end
+
+      def insert_record(record, validate = true, raise = false)
+        ensure_not_nested
+
+        if record.new_record?
+          if raise
+            record.save!(:validate => validate)
+          else
+            return unless record.save(:validate => validate)
+          end
+        end
+
+        save_through_record(record)
+        update_counter(1)
+        record
+      end
+
+      # ActiveRecord::Relation#delete_all needs to support joins before we can use a
+      # SQL-only implementation.
+      alias delete_all_on_destroy delete_all
+
+      private
+
+        def through_association
+          owner.association(through_reflection.name)
+        end
+
+        # We temporarily cache through record that has been build, because if we build a
+        # through record in build_record and then subsequently call insert_record, then we
+        # want to use the exact same object.
+        #
+        # However, after insert_record has been called, we clear the cache entry because
+        # we want it to be possible to have multiple instances of the same record in an
+        # association
+        def build_through_record(record)
+          @through_records[record.object_id] ||= begin
+            through_record = through_association.build(construct_join_attributes(record))
+            through_record.send("#{source_reflection.name}=", record)
+            through_record
+          end
+        end
+
+        def save_through_record(record)
+          build_through_record(record).save!
+        ensure
+          @through_records.delete(record.object_id)
+        end
+
+        def build_record(attributes, options = {})
+          ensure_not_nested
+
+          record = super(attributes, options)
+
+          inverse = source_reflection.inverse_of
+          if inverse
+            if inverse.macro == :has_many
+              record.send(inverse.name) << build_through_record(record)
+            elsif inverse.macro == :has_one
+              record.send("#{inverse.name}=", build_through_record(record))
+            end
+          end
+
+          record
+        end
+
         def target_reflection_has_associated_record?
-          if @reflection.through_reflection.macro == :belongs_to && @owner[@reflection.through_reflection.primary_key_name].blank?
+          if through_reflection.macro == :belongs_to && owner[through_reflection.foreign_key].blank?
             false
           else
             true
           end
         end
 
-        def construct_find_options!(options)
-          options[:joins]   = construct_joins(options[:joins])
-          options[:include] = @reflection.source_reflection.options[:include] if options[:include].nil? && @reflection.source_reflection.options[:include]
+        def update_through_counter?(method)
+          case method
+          when :destroy
+            !inverse_updates_counter_cache?(through_reflection)
+          when :nullify
+            false
+          else
+            true
+          end
         end
 
-        def insert_record(record, force = true, validate = true)
-          if record.new_record?
-            if force
-              record.save!
-            else
-              return false unless record.save(:validate => validate)
-            end
+        def delete_records(records, method)
+          ensure_not_nested
+
+          through = through_association
+          scope   = through.scoped.where(construct_join_attributes(*records))
+
+          case method
+          when :destroy
+            count = scope.destroy_all.length
+          when :nullify
+            count = scope.update_all(source_reflection.foreign_key => nil)
+          else
+            count = scope.delete_all
           end
 
-          through_association = @owner.send(@reflection.through_reflection.name)
-          through_association.create!(construct_join_attributes(record))
+          delete_through_records(through, records)
+
+          if through_reflection.macro == :has_many && update_through_counter?(method)
+            update_counter(-count, through_reflection)
+          end
+
+          update_counter(-count)
         end
 
-        # TODO - add dependent option support
-        def delete_records(records)
-          klass = @reflection.through_reflection.klass
-          records.each do |associate|
-            klass.delete_all(construct_join_attributes(associate))
+        def through_records_for(record)
+          attributes = construct_join_attributes(record)
+          candidates = Array.wrap(through_association.target)
+          candidates.find_all { |c| c.attributes.slice(*attributes.keys) == attributes }
+        end
+
+        def delete_through_records(through, records)
+          records.each do |record|
+            through_records = through_records_for(record)
+
+            if through_reflection.macro == :has_many
+              through_records.each { |r| through.target.delete(r) }
+            else
+              through.target = nil if through_records.include?(through.target)
+            end
+
+            @through_records.delete(record.object_id)
           end
         end
 
         def find_target
           return [] unless target_reflection_has_associated_record?
-          with_scope(construct_scope) { @reflection.klass.find(:all) }
-        end
-
-        def construct_sql
-          case
-            when @reflection.options[:finder_sql]
-              @finder_sql = interpolate_and_sanitize_sql(@reflection.options[:finder_sql])
-
-              @finder_sql = "#{@reflection.quoted_table_name}.#{@reflection.primary_key_name} = #{owner_quoted_id}"
-              @finder_sql << " AND (#{conditions})" if conditions
-            else
-              @finder_sql = construct_conditions
-          end
-
-          construct_counter_sql
-        end
-
-        def has_cached_counter?
-          @owner.attribute_present?(cached_counter_attribute_name)
-        end
-
-        def cached_counter_attribute_name
-          "#{@reflection.name}_count"
+          scoped.all
         end
 
         # NOTE - not sure that we can actually cope with inverses here
-        def we_can_set_the_inverse_on_this?(record)
+        def invertible_for?(record)
           false
         end
     end

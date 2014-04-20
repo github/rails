@@ -3,7 +3,7 @@
 Active Record connects classes to relational database tables to establish an
 almost zero-configuration persistence layer for applications. The library
 provides a base class that, when subclassed, sets up a mapping between the new
-class and an existing table in the database. In context of an application,
+class and an existing table in the database. In the context of an application,
 these classes are commonly referred to as *models*. Models can also be
 connected to other models; this is done by defining *associations*.
 
@@ -70,7 +70,7 @@ A short rundown of some of the major features:
   {Learn more}[link:classes/ActiveRecord/Validations.html]
 
 
-* Callbacks available for the entire life cycle (instantiation, saving, destroying, validating, etc.)
+* Callbacks available for the entire life cycle (instantiation, saving, destroying, validating, etc.).
 
    class Person < ActiveRecord::Base
      before_destroy :invalidate_payment_plan
@@ -80,18 +80,18 @@ A short rundown of some of the major features:
   {Learn more}[link:classes/ActiveRecord/Callbacks.html]
 
 
-* Observers that react to changes in a model
+* Observers that react to changes in a model.
 
    class CommentObserver < ActiveRecord::Observer
      def after_create(comment) # is called just after Comment#save
-       Notifications.deliver_new_comment("david@loudthinking.com", comment)
+       CommentMailer.new_comment_email("david@loudthinking.com", comment).deliver
      end
    end
 
   {Learn more}[link:classes/ActiveRecord/Observer.html]
 
 
-* Inheritance hierarchies
+* Inheritance hierarchies.
 
    class Company < ActiveRecord::Base; end
    class Firm < Company; end
@@ -101,7 +101,7 @@ A short rundown of some of the major features:
   {Learn more}[link:classes/ActiveRecord/Base.html]
 
 
-* Transactions
+* Transactions.
 
     # Database transaction
     Account.transaction do
@@ -112,7 +112,7 @@ A short rundown of some of the major features:
   {Learn more}[link:classes/ActiveRecord/Transactions/ClassMethods.html]
 
 
-* Reflections on columns, associations, and aggregations
+* Reflections on columns, associations, and aggregations.
 
     reflection = Firm.reflect_on_association(:clients)
     reflection.klass # => Client (class)
@@ -121,14 +121,14 @@ A short rundown of some of the major features:
   {Learn more}[link:classes/ActiveRecord/Reflection/ClassMethods.html]
 
 
-* Database abstraction through simple adapters
+* Database abstraction through simple adapters.
 
     # connect to SQLite3
     ActiveRecord::Base.establish_connection(:adapter => "sqlite3", :database => "dbfile.sqlite3")
 
     # connect to MySQL with authentication
     ActiveRecord::Base.establish_connection(
-      :adapter  => "mysql",
+      :adapter  => "mysql2",
       :host     => "localhost",
       :username => "me",
       :password => "secret",
@@ -141,16 +141,16 @@ A short rundown of some of the major features:
   SQLite3[link:classes/ActiveRecord/ConnectionAdapters/SQLite3Adapter.html].
 
 
-* Logging support for Log4r[http://log4r.sourceforge.net] and Logger[http://www.ruby-doc.org/stdlib/libdoc/logger/rdoc]
+* Logging support for Log4r[http://log4r.sourceforge.net] and Logger[http://www.ruby-doc.org/stdlib/libdoc/logger/rdoc].
 
     ActiveRecord::Base.logger = Logger.new(STDOUT)
     ActiveRecord::Base.logger = Log4r::Logger.new("Application Log")
 
 
-* Database agnostic schema management with Migrations
+* Database agnostic schema management with Migrations.
 
     class AddSystemSettings < ActiveRecord::Migration
-      def self.up
+      def up
         create_table :system_settings do |t|
           t.string  :name
           t.string  :label
@@ -162,7 +162,7 @@ A short rundown of some of the major features:
         SystemSetting.create :name => "notice", :label => "Use notice?", :value => 1
       end
 
-      def self.down
+      def down
         drop_table :system_settings
       end
     end
@@ -203,7 +203,7 @@ The latest version of Active Record can be installed with Rubygems:
 
 Source code can be downloaded as part of the Rails project on GitHub
 
-* http://github.com/rails/rails/tree/master/activerecord/
+* https://github.com/rails/rails/tree/master/activerecord
 
 
 == License
@@ -219,4 +219,4 @@ API documentation is at
 
 Bug reports and feature requests can be filed with the rest for the Ruby on Rails project here:
 
-* https://rails.lighthouseapp.com/projects/8994-ruby-on-rails/tickets
+* https://github.com/rails/rails/issues

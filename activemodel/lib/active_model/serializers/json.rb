@@ -18,58 +18,58 @@ module ActiveModel
       # Returns a JSON string representing the model. Some configuration can be
       # passed through +options+.
       #
-      # The option <tt>ActiveModel::Base.include_root_in_json</tt> controls the
-      # top-level behavior of <tt>to_json</tt>. It is <tt>true</tt> by default. When it is <tt>true</tt>,
-      # <tt>to_json</tt> will emit a single root node named after the object's type. For example:
+      # The option <tt>include_root_in_json</tt> controls the top-level behavior
+      # of +as_json+. If true (the default) +as_json+ will emit a single root
+      # node named after the object's type. For example:
       #
-      #   konata = User.find(1)
-      #   konata.to_json
+      #   user = User.find(1)
+      #   user.as_json
       #   # => { "user": {"id": 1, "name": "Konata Izumi", "age": 16,
       #                   "created_at": "2006/08/01", "awesome": true} }
       #
       #   ActiveRecord::Base.include_root_in_json = false
-      #   konata.to_json
+      #   user.as_json
       #   # => {"id": 1, "name": "Konata Izumi", "age": 16,
       #         "created_at": "2006/08/01", "awesome": true}
       #
-      # The remainder of the examples in this section assume include_root_in_json is set to
-      # <tt>false</tt>.
+      # The remainder of the examples in this section assume +include_root_in_json+
+      # is false.
       #
-      # Without any +options+, the returned JSON string will include all
-      # the model's attributes. For example:
+      # Without any +options+, the returned JSON string will include all the model's
+      # attributes. For example:
       #
-      #   konata = User.find(1)
-      #   konata.to_json
+      #   user = User.find(1)
+      #   user.as_json
       #   # => {"id": 1, "name": "Konata Izumi", "age": 16,
       #         "created_at": "2006/08/01", "awesome": true}
       #
       # The <tt>:only</tt> and <tt>:except</tt> options can be used to limit the attributes
       # included, and work similar to the +attributes+ method. For example:
       #
-      #   konata.to_json(:only => [ :id, :name ])
+      #   user.as_json(:only => [ :id, :name ])
       #   # => {"id": 1, "name": "Konata Izumi"}
       #
-      #   konata.to_json(:except => [ :id, :created_at, :age ])
+      #   user.as_json(:except => [ :id, :created_at, :age ])
       #   # => {"name": "Konata Izumi", "awesome": true}
       #
-      # To include any methods on the model, use <tt>:methods</tt>.
+      # To include the result of some method calls on the model use <tt>:methods</tt>:
       #
-      #   konata.to_json(:methods => :permalink)
+      #   user.as_json(:methods => :permalink)
       #   # => {"id": 1, "name": "Konata Izumi", "age": 16,
       #         "created_at": "2006/08/01", "awesome": true,
       #         "permalink": "1-konata-izumi"}
       #
-      # To include associations, use <tt>:include</tt>.
+      # To include associations use <tt>:include</tt>:
       #
-      #   konata.to_json(:include => :posts)
+      #   user.as_json(:include => :posts)
       #   # => {"id": 1, "name": "Konata Izumi", "age": 16,
       #         "created_at": "2006/08/01", "awesome": true,
       #         "posts": [{"id": 1, "author_id": 1, "title": "Welcome to the weblog"},
       #                   {"id": 2, author_id: 1, "title": "So I was thinking"}]}
       #
-      # 2nd level and higher order associations work as well:
+      # Second level and higher order associations work as well:
       #
-      #   konata.to_json(:include => { :posts => {
+      #   user.as_json(:include => { :posts => {
       #                                  :include => { :comments => {
       #                                                :only => :body } },
       #                                  :only => :title } })

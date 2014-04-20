@@ -39,12 +39,13 @@ module ActiveSupport
         ActiveSupport::LogSubscriber.colorize_logging = false
 
         set_logger(@logger)
+        @old_notifier = ActiveSupport::Notifications.notifier
         ActiveSupport::Notifications.notifier = @notifier
       end
 
       def teardown
         set_logger(nil)
-        ActiveSupport::Notifications.notifier = nil
+        ActiveSupport::Notifications.notifier = @old_notifier
       end
 
       class MockLogger

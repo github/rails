@@ -2,8 +2,10 @@ require 'date'
 require 'bigdecimal'
 require 'bigdecimal/util'
 require 'active_support/core_ext/benchmark'
+require 'active_support/deprecation'
 
 # TODO: Autoload these files
+require 'active_record/connection_adapters/column'
 require 'active_record/connection_adapters/abstract/schema_definitions'
 require 'active_record/connection_adapters/abstract/schema_statements'
 require 'active_record/connection_adapters/abstract/database_statements'
@@ -12,6 +14,7 @@ require 'active_record/connection_adapters/abstract/connection_pool'
 require 'active_record/connection_adapters/abstract/connection_specification'
 require 'active_record/connection_adapters/abstract/query_cache'
 require 'active_record/connection_adapters/abstract/database_limits'
+require 'active_record/result'
 
 module ActiveRecord
   module ConnectionAdapters # :nodoc:
@@ -36,63 +39,84 @@ module ActiveRecord
 
       define_callbacks :checkout, :checkin
 
+      attr_accessor :visitor
+      attr_reader :logger
+
       def initialize(connection, logger = nil) #:nodoc:
         @active = nil
         @connection, @logger = connection, logger
         @query_cache_enabled = false
-        @query_cache = {}
+        @query_cache = Hash.new { |h,sql| h[sql] = {} }
         @instrumenter = ActiveSupport::Notifications.instrumenter
+        @visitor = nil
       end
 
-      # Returns the human-readable name of the adapter.  Use mixed case - one
+      # Returns a visitor instance for this adaptor, which conforms to the Arel::ToSql interface
+      def self.visitor_for(pool) # :nodoc:
+        adapter = pool.spec.config[:adapter]
+
+        if Arel::Visitors::VISITORS[adapter]
+          ActiveSupport::Deprecation.warn(
+            "Arel::Visitors::VISITORS is deprecated and will be removed. Database adapters " \
+            "should define a visitor_for method which returns the appropriate visitor for " \
+            "the database. For example, MysqlAdapter.visitor_for(pool) returns " \
+            "Arel::Visitors::MySQL.new(pool)."
+          )
+
+          Arel::Visitors::VISITORS[adapter].new(pool)
+        else
+          Arel::Visitors::ToSql.new(pool)
+        end
+      end
+
+      # Returns the human-readable name of the adapter. Use mixed case - one
       # can always use downcase if needed.
       def adapter_name
         'Abstract'
       end
 
-      # Does this adapter support migrations?  Backend specific, as the
+      # Does this adapter support migrations? Backend specific, as the
       # abstract adapter always returns +false+.
       def supports_migrations?
         false
       end
 
       # Can this adapter determine the primary key for tables not attached
-      # to an Active Record class, such as join tables?  Backend specific, as
+      # to an Active Record class, such as join tables? Backend specific, as
       # the abstract adapter always returns +false+.
       def supports_primary_key?
         false
       end
 
-      # Does this adapter support using DISTINCT within COUNT?  This is +true+
+      # Does this adapter support using DISTINCT within COUNT? This is +true+
       # for all adapters except sqlite.
       def supports_count_distinct?
         true
       end
 
-      # Does this adapter support DDL rollbacks in transactions?  That is, would
-      # CREATE TABLE or ALTER TABLE get rolled back by a transaction?  PostgreSQL,
-      # SQL Server, and others support this.  MySQL and others do not.
+      # Does this adapter support DDL rollbacks in transactions? That is, would
+      # CREATE TABLE or ALTER TABLE get rolled back by a transaction? PostgreSQL,
+      # SQL Server, and others support this. MySQL and others do not.
       def supports_ddl_transactions?
         false
       end
 
-      # Does this adapter support savepoints? PostgreSQL and MySQL do, SQLite
-      # does not.
+      def supports_bulk_alter?
+        false
+      end
+
+      # Does this adapter support savepoints? PostgreSQL and MySQL do,
+      # SQLite < 3.6.8 does not.
       def supports_savepoints?
         false
       end
 
       # Should primary key values be selected from their corresponding
-      # sequence before the insert statement?  If true, next_sequence_value
+      # sequence before the insert statement? If true, next_sequence_value
       # is called before each insert to set the record's primary key.
       # This is false for all adapters but Firebird.
       def prefetch_primary_key?(table_name = nil)
         false
-      end
-
-      # Does this adapter restrict the number of ids you can use in a list. Oracle has a limit of 1000.
-      def ids_in_list_limit
-        nil
       end
 
       # QUOTING ==================================================
@@ -100,6 +124,12 @@ module ActiveRecord
       # Override to return the quoted table name. Defaults to column quoting.
       def quote_table_name(name)
         quote_column_name(name)
+      end
+
+      # Returns a bind substitution value given a +column+ and list of current
+      # +binds+
+      def substitute_at(column, index)
+        Arel::Nodes::BindParam.new '?'
       end
 
       # REFERENTIAL INTEGRITY ====================================
@@ -137,6 +167,13 @@ module ActiveRecord
       # The default implementation does nothing; the implementation should be
       # overridden by concrete adapters.
       def reset!
+        # this should be overridden by concrete adapters
+      end
+
+      ###
+      # Clear any caching the database adapter may be doing, for example
+      # clearing the prepared statement cache. This is database specific.
+      def clear_cache!
         # this should be overridden by concrete adapters
       end
 
@@ -189,24 +226,29 @@ module ActiveRecord
       def release_savepoint
       end
 
+      def case_sensitive_modifier(node)
+        node
+      end
+
       def current_savepoint_name
         "active_record_#{open_transactions}"
       end
 
       protected
 
-        def log(sql, name)
-          name ||= "SQL"
-          @instrumenter.instrument("sql.active_record",
-            :sql => sql, :name => name, :connection_id => object_id) do
-            yield
-          end
-        rescue => e
+        def log(sql, name = "SQL", binds = [])
+          @instrumenter.instrument(
+            "sql.active_record",
+            :sql           => sql,
+            :name          => name,
+            :connection_id => object_id,
+            :binds         => binds) { yield }
+        rescue Exception => e
           message = "#{e.class.name}: #{e.message}: #{sql}"
           @logger.debug message if @logger
-          ex = translate_exception(e, message)
-          ex.set_backtrace e.backtrace
-          raise ex
+          exception = translate_exception(e, message)
+          exception.set_backtrace e.backtrace
+          raise exception
         end
 
         def translate_exception(e, message)

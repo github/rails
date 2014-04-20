@@ -16,7 +16,7 @@ class InheritanceTest < ActiveRecord::TestCase
 
   def test_class_with_blank_sti_name
     company = Company.find(:first)
-    company = company.clone
+    company = company.dup
     company.extend(Module.new {
       def read_attribute(name)
         return '  ' if name == 'type'
@@ -203,12 +203,12 @@ class InheritanceTest < ActiveRecord::TestCase
 
   def test_eager_load_belongs_to_something_inherited
     account = Account.find(1, :include => :firm)
-    assert_not_nil account.instance_variable_get("@firm"), "nil proves eager load failed"
+    assert account.association_cache.key?(:firm), "nil proves eager load failed"
   end
 
   def test_eager_load_belongs_to_primary_key_quoting
     con = Account.connection
-    assert_sql(/\(#{con.quote_table_name('companies')}.#{con.quote_column_name('id')} = 1\)/) do
+    assert_sql(/#{con.quote_table_name('companies')}.#{con.quote_column_name('id')} IN \(1\)/) do
       Account.find(1, :include => :firm)
     end
   end
@@ -217,6 +217,10 @@ class InheritanceTest < ActiveRecord::TestCase
     switch_to_alt_inheritance_column
     test_eager_load_belongs_to_something_inherited
     switch_to_default_inheritance_column
+  end
+
+  def test_inherits_custom_primary_key
+    assert_equal Subscriber.primary_key, SpecialSubscriber.primary_key
   end
 
   def test_inheritance_without_mapping

@@ -29,6 +29,8 @@ platforms :ruby do
   # AR
   gem "sqlite3", "~> 1.3.3"
 
+  gem 'bcrypt-ruby', '~> 3.0.0'
+
   group :db do
     gem "pg", ">= 0.9.0"
     gem "mysql", ">= 2.8.1"

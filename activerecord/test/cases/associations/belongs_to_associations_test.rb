@@ -13,11 +13,12 @@ require 'models/comment'
 require 'models/sponsor'
 require 'models/member'
 require 'models/essay'
+require 'models/toy'
 
 class BelongsToAssociationsTest < ActiveRecord::TestCase
   fixtures :accounts, :companies, :developers, :projects, :topics,
            :developers_projects, :computers, :authors, :author_addresses,
-           :posts, :tags, :taggings, :comments
+           :posts, :tags, :taggings, :comments, :sponsors, :members
 
   def test_belongs_to
     Client.find(3).firm.name
@@ -50,11 +51,6 @@ class BelongsToAssociationsTest < ActiveRecord::TestCase
     assert_nothing_raised { account.firm = account.firm }
   end
 
-  def test_triple_equality
-    assert Client.find(3).firm === Firm
-    assert Firm === Client.find(3).firm
-  end
-
   def test_type_mismatch
     assert_raise(ActiveRecord::AssociationTypeMismatch) { Account.find(1).firm = 1 }
     assert_raise(ActiveRecord::AssociationTypeMismatch) { Account.find(1).firm = Project.find(1) }
@@ -75,23 +71,17 @@ class BelongsToAssociationsTest < ActiveRecord::TestCase
   end
 
   def test_eager_loading_with_primary_key
-    apple = Firm.create("name" => "Apple")
-    citibank = Client.create("name" => "Citibank", :firm_name => "Apple")
+    Firm.create("name" => "Apple")
+    Client.create("name" => "Citibank", :firm_name => "Apple")
     citibank_result = Client.find(:first, :conditions => {:name => "Citibank"}, :include => :firm_with_primary_key)
-    assert_not_nil citibank_result.instance_variable_get("@firm_with_primary_key")
+    assert citibank_result.association_cache.key?(:firm_with_primary_key)
   end
 
-  def test_no_unexpected_aliasing
-    first_firm = companies(:first_firm)
-    another_firm = companies(:another_firm)
-
-    citibank = Account.create("credit_limit" => 10)
-    citibank.firm = first_firm
-    original_proxy = citibank.firm
-    citibank.firm = another_firm
-
-    assert_equal first_firm.object_id, original_proxy.target.object_id
-    assert_equal another_firm.object_id, citibank.firm.target.object_id
+  def test_eager_loading_with_primary_key_as_symbol
+    Firm.create("name" => "Apple")
+    Client.create("name" => "Citibank", :firm_name => "Apple")
+    citibank_result = Client.find(:first, :conditions => {:name => "Citibank"}, :include => :firm_with_primary_key_symbols)
+    assert citibank_result.association_cache.key?(:firm_with_primary_key_symbols)
   end
 
   def test_creating_the_belonging_object
@@ -126,6 +116,23 @@ class BelongsToAssociationsTest < ActiveRecord::TestCase
     assert_equal apple.name, client.firm_name
   end
 
+  def test_create!
+    client  = Client.create!(:name => "Jimmy")
+    account = client.create_account!(:credit_limit => 10)
+    assert_equal account, client.account
+    assert account.persisted?
+    client.save
+    client.reload
+    assert_equal account, client.account
+  end
+
+  def test_failing_create!
+    client  = Client.create!(:name => "Jimmy")
+    assert_raise(ActiveRecord::RecordInvalid) { client.create_account! }
+    assert_not_nil client.account
+    assert client.account.new_record?
+  end
+
   def test_natural_assignment_to_nil
     client = Client.find(3)
     client.firm = nil
@@ -152,6 +159,17 @@ class BelongsToAssociationsTest < ActiveRecord::TestCase
     assert_not_nil Company.find(3).firm_with_condition, "Microsoft should have a firm"
   end
 
+  def test_polymorphic_association_class
+    sponsor = Sponsor.new
+    assert_nil sponsor.association(:sponsorable).send(:klass)
+
+    sponsor.sponsorable_type = '' # the column doesn't have to be declared NOT NULL
+    assert_nil sponsor.association(:sponsorable).send(:klass)
+
+    sponsor.sponsorable = Member.new :name => "Bert"
+    assert_equal Member, sponsor.association(:sponsorable).send(:klass)
+  end
+
   def test_with_polymorphic_and_condition
     sponsor = Sponsor.create
     member = Member.create :name => "Bert"
@@ -159,13 +177,6 @@ class BelongsToAssociationsTest < ActiveRecord::TestCase
 
     assert_equal member, sponsor.sponsorable
     assert_nil sponsor.sponsorable_with_conditions
-  end
-
-  def test_polymorphic_with_empty_string_for_type
-    sponsor = Sponsor.create
-    sponsor.sponsorable_type = ""
-
-    assert_nil sponsor.sponsorable
   end
 
   def test_with_select
@@ -184,17 +195,6 @@ class BelongsToAssociationsTest < ActiveRecord::TestCase
     assert_equal 0, Topic.find(debate.id).send(:read_attribute, "replies_count"), "First reply deleted"
   end
 
-  def test_belongs_to_with_primary_key_counter
-    debate = Topic.create("title" => "debate")
-    assert_equal 0, debate.send(:read_attribute, "replies_count"), "No replies yet"
-
-    trash = debate.replies_with_primary_key.create("title" => "blah!", "content" => "world around!")
-    assert_equal 1, Topic.find(debate.id).send(:read_attribute, "replies_count"), "First reply created"
-
-    trash.destroy
-    assert_equal 0, Topic.find(debate.id).send(:read_attribute, "replies_count"), "First reply deleted"
-  end
-
   def test_belongs_to_counter_with_assigning_nil
     p = Post.find(1)
     c = Comment.find(1)
@@ -207,16 +207,23 @@ class BelongsToAssociationsTest < ActiveRecord::TestCase
     assert_equal 1, Post.find(p.id).comments.size
   end
 
-  def test_belongs_to_with_primary_key_counter_with_assigning_nil
-    debate = Topic.create("title" => "debate")
-    reply  = Reply.create("title" => "blah!", "content" => "world around!", "parent_title" => "debate")
+  def test_belongs_to_with_primary_key_counter
+    debate  = Topic.create("title" => "debate")
+    debate2 = Topic.create("title" => "debate2")
+    reply   = Reply.create("title" => "blah!", "content" => "world around!", "parent_title" => "debate")
 
-    assert_equal debate.title, reply.parent_title
-    assert_equal 1, Topic.find(debate.id).send(:read_attribute, "replies_count")
+    assert_equal 1, debate.reload.replies_count
+    assert_equal 0, debate2.reload.replies_count
+
+    reply.topic_with_primary_key = debate2
+
+    assert_equal 0, debate.reload.replies_count
+    assert_equal 1, debate2.reload.replies_count
 
     reply.topic_with_primary_key = nil
 
-    assert_equal 0, Topic.find(debate.id).send(:read_attribute, "replies_count")
+    assert_equal 0, debate.reload.replies_count
+    assert_equal 0, debate2.reload.replies_count
   end
 
   def test_belongs_to_counter_with_reassigning
@@ -294,10 +301,10 @@ class BelongsToAssociationsTest < ActiveRecord::TestCase
     final_cut = Client.new("name" => "Final Cut")
     firm = Firm.find(1)
     final_cut.firm = firm
-    assert final_cut.new_record?
+    assert !final_cut.persisted?
     assert final_cut.save
-    assert !final_cut.new_record?
-    assert !firm.new_record?
+    assert final_cut.persisted?
+    assert firm.persisted?
     assert_equal firm, final_cut.firm
     assert_equal firm, final_cut.firm(true)
   end
@@ -306,10 +313,10 @@ class BelongsToAssociationsTest < ActiveRecord::TestCase
     final_cut = Client.new("name" => "Final Cut")
     firm = Firm.find(1)
     final_cut.firm_with_primary_key = firm
-    assert final_cut.new_record?
+    assert !final_cut.persisted?
     assert final_cut.save
-    assert !final_cut.new_record?
-    assert !firm.new_record?
+    assert final_cut.persisted?
+    assert firm.persisted?
     assert_equal firm, final_cut.firm_with_primary_key
     assert_equal firm, final_cut.firm_with_primary_key(true)
   end
@@ -320,13 +327,27 @@ class BelongsToAssociationsTest < ActiveRecord::TestCase
     assert_equal Firm.find(:first, :order => "id"), c.firm_with_basic_id
   end
 
-  def test_forgetting_the_load_when_foreign_key_enters_late
-    c = Client.new
-    assert_nil c.firm_with_basic_id
+  def test_setting_foreign_key_after_nil_target_loaded
+    client = Client.new
+    client.firm_with_basic_id
+    client.firm_id = 1
 
-    c.firm_id = 1
-    # sometimes tests on Oracle fail if ORDER BY is not provided therefore add always :order with :first
-    assert_equal Firm.find(:first, :order => "id"), c.firm_with_basic_id
+    assert_equal companies(:first_firm), client.firm_with_basic_id
+  end
+
+  def test_polymorphic_setting_foreign_key_after_nil_target_loaded
+    sponsor = Sponsor.new
+    sponsor.sponsorable
+    sponsor.sponsorable_id = 1
+    sponsor.sponsorable_type = "Member"
+
+    assert_equal members(:groucho), sponsor.sponsorable
+  end
+
+  def test_dont_find_target_when_foreign_key_is_null
+    tagging = taggings(:thinking_general)
+    queries = assert_sql { tagging.super_tag }
+    assert_equal 0, queries.length
   end
 
   def test_field_name_same_as_foreign_key
@@ -428,6 +449,18 @@ class BelongsToAssociationsTest < ActiveRecord::TestCase
     assert_nil sponsor.sponsorable_id
   end
 
+  def test_assignment_updates_foreign_id_field_for_new_and_saved_records
+    client = Client.new
+    saved_firm = Firm.create :name => "Saved"
+    new_firm = Firm.new
+
+    client.firm = saved_firm
+    assert_equal saved_firm.id, client.client_of
+
+    client.firm = new_firm
+    assert_nil client.client_of
+  end
+
   def test_polymorphic_assignment_with_primary_key_updates_foreign_id_field_for_new_and_saved_records
     essay = Essay.new
     saved_writer = Author.create(:name => "David")
@@ -494,5 +527,172 @@ class BelongsToAssociationsTest < ActiveRecord::TestCase
   def test_attributes_are_being_set_when_initialized_from_belongs_to_association_with_where_clause
     new_firm = accounts(:signals37).build_firm(:name => 'Apple')
     assert_equal new_firm.name, "Apple"
+  end
+
+  def test_reassigning_the_parent_id_updates_the_object
+    client = companies(:second_client)
+
+    client.firm
+    client.firm_with_condition
+    firm_proxy                = client.send(:association_instance_get, :firm)
+    firm_with_condition_proxy = client.send(:association_instance_get, :firm_with_condition)
+
+    assert !firm_proxy.stale_target?
+    assert !firm_with_condition_proxy.stale_target?
+    assert_equal companies(:first_firm), client.firm
+    assert_equal companies(:first_firm), client.firm_with_condition
+
+    client.client_of = companies(:another_firm).id
+
+    assert firm_proxy.stale_target?
+    assert firm_with_condition_proxy.stale_target?
+    assert_equal companies(:another_firm), client.firm
+    assert_equal companies(:another_firm), client.firm_with_condition
+  end
+
+  def test_polymorphic_reassignment_of_associated_id_updates_the_object
+    sponsor = sponsors(:moustache_club_sponsor_for_groucho)
+
+    sponsor.sponsorable
+    proxy = sponsor.send(:association_instance_get, :sponsorable)
+
+    assert !proxy.stale_target?
+    assert_equal members(:groucho), sponsor.sponsorable
+
+    sponsor.sponsorable_id = members(:some_other_guy).id
+
+    assert proxy.stale_target?
+    assert_equal members(:some_other_guy), sponsor.sponsorable
+  end
+
+  def test_polymorphic_reassignment_of_associated_type_updates_the_object
+    sponsor = sponsors(:moustache_club_sponsor_for_groucho)
+
+    sponsor.sponsorable
+    proxy = sponsor.send(:association_instance_get, :sponsorable)
+
+    assert !proxy.stale_target?
+    assert_equal members(:groucho), sponsor.sponsorable
+
+    sponsor.sponsorable_type = 'Firm'
+
+    assert proxy.stale_target?
+    assert_equal companies(:first_firm), sponsor.sponsorable
+  end
+
+  def test_reloading_association_with_key_change
+    client = companies(:second_client)
+    firm = client.association(:firm)
+
+    client.firm = companies(:another_firm)
+    firm.reload
+    assert_equal companies(:another_firm), firm.target
+
+    client.client_of = companies(:first_firm).id
+    firm.reload
+    assert_equal companies(:first_firm), firm.target
+  end
+
+  def test_polymorphic_counter_cache
+    tagging = taggings(:welcome_general)
+    post    = posts(:welcome)
+    comment = comments(:greetings)
+
+    assert_difference "post.reload.taggings_count", -1 do
+      assert_difference 'comment.reload.taggings_count', +1 do
+        tagging.taggable = comment
+      end
+    end
+  end
+
+  def test_polymorphic_with_custom_foreign_type
+    sponsor = sponsors(:moustache_club_sponsor_for_groucho)
+    groucho = members(:groucho)
+    other   = members(:some_other_guy)
+
+    assert_equal groucho, sponsor.sponsorable
+    assert_equal groucho, sponsor.thing
+
+    sponsor.thing = other
+
+    assert_equal other, sponsor.sponsorable
+    assert_equal other, sponsor.thing
+
+    sponsor.sponsorable = groucho
+
+    assert_equal groucho, sponsor.sponsorable
+    assert_equal groucho, sponsor.thing
+  end
+
+  def test_build_with_conditions
+    client = companies(:second_client)
+    firm   = client.build_bob_firm
+
+    assert_equal "Bob", firm.name
+  end
+
+  def test_create_with_conditions
+    client = companies(:second_client)
+    firm   = client.create_bob_firm
+
+    assert_equal "Bob", firm.name
+  end
+
+  def test_create_bang_with_conditions
+    client = companies(:second_client)
+    firm   = client.create_bob_firm!
+
+    assert_equal "Bob", firm.name
+  end
+
+  def test_build_with_block
+    client = Client.create(:name => 'Client Company')
+
+    firm = client.build_firm{ |f| f.name = 'Agency Company' }
+    assert_equal 'Agency Company', firm.name
+  end
+
+  def test_create_with_block
+    client = Client.create(:name => 'Client Company')
+
+    firm = client.create_firm{ |f| f.name = 'Agency Company' }
+    assert_equal 'Agency Company', firm.name
+  end
+
+  def test_create_bang_with_block
+    client = Client.create(:name => 'Client Company')
+
+    firm = client.create_firm!{ |f| f.name = 'Agency Company' }
+    assert_equal 'Agency Company', firm.name
+  end
+
+  def test_should_set_foreign_key_on_create_association
+    client = Client.create! :name => "fuu"
+
+    firm = client.create_firm :name => "baa"
+    assert_equal firm.id, client.client_of
+  end
+
+  def test_should_set_foreign_key_on_create_association!
+    client = Client.create! :name => "fuu"
+
+    firm = client.create_firm! :name => "baa"
+    assert_equal firm.id, client.client_of
+  end
+
+  def test_self_referential_belongs_to_with_counter_cache_assigning_nil
+    comment = Comment.create! :post => posts(:thinking), :body => "fuu"
+    comment.parent = nil
+    comment.save!
+
+    assert_equal nil, comment.reload.parent
+    assert_equal 0, comments(:greetings).reload.children_count
+  end
+
+  def test_polymorphic_with_custom_primary_key
+    toy = Toy.create!
+    sponsor = Sponsor.create!(:sponsorable => toy)
+
+    assert_equal toy, sponsor.reload.sponsorable
   end
 end

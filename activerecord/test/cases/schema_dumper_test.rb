@@ -110,7 +110,7 @@ class SchemaDumperTest < ActiveRecord::TestCase
 
       assert_match %r{c_int_4.*}, output
       assert_no_match %r{c_int_4.*:limit}, output
-    elsif current_adapter?(:SQLiteAdapter)
+    elsif current_adapter?(:SQLite3Adapter)
       assert_match %r{c_int_1.*:limit => 1}, output
       assert_match %r{c_int_2.*:limit => 2}, output
       assert_match %r{c_int_3.*:limit => 3}, output
@@ -119,7 +119,7 @@ class SchemaDumperTest < ActiveRecord::TestCase
     assert_match %r{c_int_without_limit.*}, output
     assert_no_match %r{c_int_without_limit.*:limit}, output
 
-    if current_adapter?(:SQLiteAdapter)
+    if current_adapter?(:SQLite3Adapter)
       assert_match %r{c_int_5.*:limit => 5}, output
       assert_match %r{c_int_6.*:limit => 6}, output
       assert_match %r{c_int_7.*:limit => 7}, output
@@ -213,6 +213,13 @@ class SchemaDumperTest < ActiveRecord::TestCase
         assert_match %r{t.xml "data"}, output
       end
     end
+
+    def test_schema_dump_includes_tsvector_shorthand_definition
+      output = standard_dump
+      if %r{create_table "postgresql_tsvectors"} =~ output
+        assert_match %r{t.tsvector "text_vector"}, output
+      end
+    end
   end
 
   def test_schema_dump_keeps_large_precision_integer_columns_as_decimal
@@ -231,5 +238,10 @@ class SchemaDumperTest < ActiveRecord::TestCase
     assert_not_nil(match, "goofy_string_id table not found")
     assert_match %r(:id => false), match[1], "no table id not preserved"
     assert_match %r{t.string[[:space:]]+"id",[[:space:]]+:null => false$}, match[2], "non-primary key id column not preserved"
+  end
+
+  def test_schema_dump_keeps_id_false_when_id_is_false_and_unique_not_null_column_added
+    output = standard_dump
+    assert_match %r{create_table "subscribers", :id => false}, output
   end
 end

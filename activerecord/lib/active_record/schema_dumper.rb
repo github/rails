@@ -87,7 +87,7 @@ HEADER
 
           # first dump primary key column
           if @connection.respond_to?(:pk_and_sequence_for)
-            pk, pk_seq = @connection.pk_and_sequence_for(table)
+            pk, _ = @connection.pk_and_sequence_for(table)
           elsif @connection.respond_to?(:primary_key)
             pk = @connection.primary_key(table)
           end
@@ -118,9 +118,9 @@ HEADER
                                  column.type.to_s
                                end
             spec[:limit]     = column.limit.inspect if column.limit != @types[column.type][:limit] && spec[:type] != 'decimal'
-            spec[:precision] = column.precision.inspect if !column.precision.nil?
-            spec[:scale]     = column.scale.inspect if !column.scale.nil?
-            spec[:null]      = 'false' if !column.null
+            spec[:precision] = column.precision.inspect if column.precision
+            spec[:scale]     = column.scale.inspect if column.scale
+            spec[:null]      = 'false' unless column.null
             spec[:default]   = default_string(column.default) if column.has_default?
             (spec.keys - [:name, :type]).each{ |k| spec[k].insert(0, "#{k.inspect} => ")}
             spec
@@ -180,13 +180,15 @@ HEADER
       def indexes(table, stream)
         if (indexes = @connection.indexes(table)).any?
           add_index_statements = indexes.map do |index|
-            statement_parts = [ ('add_index ' + index.table.inspect) ]
-            statement_parts << index.columns.inspect
-            statement_parts << (':name => ' + index.name.inspect)
+            statement_parts = [
+              ('add_index ' + index.table.inspect),
+              index.columns.inspect,
+              (':name => ' + index.name.inspect),
+            ]
             statement_parts << ':unique => true' if index.unique
 
-            index_lengths = index.lengths.compact if index.lengths.is_a?(Array)
-            statement_parts << (':length => ' + Hash[*index.columns.zip(index.lengths).flatten].inspect) if index_lengths.present?
+            index_lengths = (index.lengths || []).compact
+            statement_parts << (':length => ' + Hash[index.columns.zip(index.lengths)].inspect) unless index_lengths.empty?
 
             '  ' + statement_parts.join(', ')
           end

@@ -13,13 +13,6 @@ class AdapterTest < ActiveRecord::TestCase
     assert tables.include?("topics")
   end
 
-  def test_exception
-    ex = assert_raises(ActiveRecord::StatementInvalid) do
-      @connection.execute 'this is bad sql'
-    end
-    assert ex.backtrace.grep(/rescue in/).empty?, 'backtrace should not include rescue'
-  end
-
   def test_table_exists?
     assert @connection.table_exists?("accounts")
     assert !@connection.table_exists?("nonexistingtable")
@@ -152,5 +145,15 @@ class AdapterTest < ActiveRecord::TestCase
         end
       end
     end
+  end
+
+  def test_deprecated_visitor_for
+    visitor_klass = Class.new(Arel::Visitors::ToSql)
+    Arel::Visitors::VISITORS['fuuu'] = visitor_klass
+    pool = stub(:spec => stub(:config => { :adapter => 'fuuu' }))
+    visitor = assert_deprecated {
+      ActiveRecord::ConnectionAdapters::AbstractAdapter.visitor_for(pool)
+    }
+    assert visitor.is_a?(visitor_klass)
   end
 end

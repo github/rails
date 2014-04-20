@@ -2,16 +2,27 @@ require "cases/helper"
 require 'models/post'
 require 'models/comment'
 require 'models/author'
+require 'models/essay'
 require 'models/category'
 require 'models/categorization'
+require 'models/person'
 require 'models/tagging'
+require 'models/tag'
 
 class InnerJoinAssociationTest < ActiveRecord::TestCase
-  fixtures :authors, :posts, :comments, :categories, :categories_posts, :categorizations, :taggings, :tags
+  fixtures :authors, :essays, :posts, :comments, :categories, :categories_posts, :categorizations,
+           :taggings, :tags
 
   def test_construct_finder_sql_applies_aliases_tables_on_association_conditions
     result = Author.joins(:thinking_posts, :welcome_posts).to_a
     assert_equal authors(:david), result.first
+  end
+
+  def test_construct_finder_sql_does_not_table_name_collide_on_duplicate_associations
+    assert_nothing_raised do
+      sql = Person.joins(:agents => {:agents => :agents}).joins(:agents => {:agents => {:primary_contact => :agents}}).to_sql
+      assert_match(/agents_people_4/i, sql)
+    end
   end
 
   def test_construct_finder_sql_ignores_empty_joins_hash
@@ -24,12 +35,15 @@ class InnerJoinAssociationTest < ActiveRecord::TestCase
     assert_no_match(/JOIN/i, sql)
   end
 
-  def test_construct_finder_sql_on_polymorphic_through_includes_type
-    # Posts has one tagging (polymorphic)
-    # Author has one tagging through post.
-    # Should be something like:
-    # INNER JOIN taggings.taggable_id = posts.id AND taggings.taggable_type = 'Post'
-    assert_match(/taggable_type/i, Author.joins(:taggings).to_sql.to_s)
+  def test_join_conditions_added_to_join_clause
+    sql = Author.joins(:essays).to_sql
+    assert_match(/writer_type.*?=.*?Author/i, sql)
+    assert_no_match(/WHERE/i, sql)
+  end
+
+  def test_join_conditions_allow_nil_associations
+    authors = Author.includes(:essays).where(:essays => {:id => nil})
+    assert_equal 2, authors.count
   end
 
   def test_find_with_implicit_inner_joins_honors_readonly_without_select
@@ -72,9 +86,22 @@ class InnerJoinAssociationTest < ActiveRecord::TestCase
     assert_equal real_count, authors_with_welcoming_post_titles, "inner join and conditions should have only returned authors posting titles starting with 'Welcome'"
   end
 
-  def test_find_on_polymorphic_has_one_association
-    # Author => has_one :tagging, :through => :posts
-    # Post => has_one :tagging, :as => :taggable
-    assert_equal Author.joins(:posts => :tagging).all, Author.joins(:tagging).all
+  def test_find_with_sti_join
+    scope = Post.joins(:special_comments).where(:id => posts(:sti_comments).id)
+
+    # The join should match SpecialComment and its subclasses only
+    assert scope.where("comments.type" => "Comment").empty?
+    assert !scope.where("comments.type" => "SpecialComment").empty?
+    assert !scope.where("comments.type" => "SubSpecialComment").empty?
+  end
+
+  def test_find_with_conditions_on_reflection
+    assert !posts(:welcome).comments.empty?
+    assert Post.joins(:nonexistant_comments).where(:id => posts(:welcome).id).empty? # [sic!]
+  end
+
+  def test_find_with_conditions_on_through_reflection
+    assert !posts(:welcome).tags.empty?
+    assert Post.joins(:misc_tags).where(:id => posts(:welcome).id).empty?
   end
 end

@@ -3,6 +3,16 @@ module ActiveRecord
   #
   # Defines some test assertions to test against SQL queries.
   class TestCase < ActiveSupport::TestCase #:nodoc:
+    setup :cleanup_identity_map
+
+    def setup
+      cleanup_identity_map
+    end
+
+    def cleanup_identity_map
+      ActiveRecord::IdentityMap.clear
+    end
+
     # Backport skip to Ruby 1.8.  test/unit doesn't support it, so just
     # make it a noop.
     unless instance_methods.map(&:to_s).include?("skip")
@@ -23,6 +33,7 @@ module ActiveRecord
     def assert_sql(*patterns_to_match)
       $queries_executed = []
       yield
+      $queries_executed
     ensure
       failed_patterns = []
       patterns_to_match.each do |pattern|
@@ -35,27 +46,11 @@ module ActiveRecord
       $queries_executed = []
       yield
     ensure
-      %w{ BEGIN COMMIT }.each { |x| $queries_executed.delete(x) }
       assert_equal num, $queries_executed.size, "#{$queries_executed.size} instead of #{num} queries were executed.#{$queries_executed.size == 0 ? '' : "\nQueries:\n#{$queries_executed.join("\n")}"}"
     end
 
     def assert_no_queries(&block)
       assert_queries(0, &block)
-    end
-
-    def self.use_concurrent_connections
-      setup :connection_allow_concurrency_setup
-      teardown :connection_allow_concurrency_teardown
-    end
-
-    def connection_allow_concurrency_setup
-      @connection = ActiveRecord::Base.remove_connection
-      ActiveRecord::Base.establish_connection(@connection.merge({:allow_concurrency => true}))
-    end
-
-    def connection_allow_concurrency_teardown
-      ActiveRecord::Base.clear_all_connections!
-      ActiveRecord::Base.establish_connection(@connection)
     end
 
     def with_kcode(kcode)

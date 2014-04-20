@@ -94,6 +94,11 @@ class PooledConnectionsTest < ActiveRecord::TestCase
     ActiveRecord::Base.connection_handler = old_handler
   end
 
+  def test_connection_config
+    ActiveRecord::Base.establish_connection(@connection)
+    assert_equal @connection, ActiveRecord::Base.connection_config
+  end
+
   def test_with_connection_nesting_safety
     ActiveRecord::Base.establish_connection(@connection.merge({:pool => 1, :wait_timeout => 0.1}))
 
@@ -137,4 +142,4 @@ class PooledConnectionsTest < ActiveRecord::TestCase
   def add_record(name)
     ActiveRecord::Base.connection_pool.with_connection { Project.create! :name => name }
   end
-end unless %w(FrontBase).include? ActiveRecord::Base.connection.adapter_name
+end unless current_adapter?(:FrontBase) || in_memory_db?

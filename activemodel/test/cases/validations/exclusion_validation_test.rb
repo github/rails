@@ -42,4 +42,16 @@ class ExclusionValidationTest < ActiveModel::TestCase
   ensure
     Person.reset_callbacks(:validate)
   end
+
+  def test_validates_exclusion_of_with_lambda
+    Topic.validates_exclusion_of :title, :in => lambda{ |topic| topic.author_name == "sikachu" ? %w( monkey elephant ) : %w( abe wasabi ) }
+
+    t = Topic.new
+    t.title = "elephant"
+    t.author_name = "sikachu"
+    assert t.invalid?
+
+    t.title = "wasabi"
+    assert t.valid?
+  end
 end

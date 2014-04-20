@@ -1,3 +1,6 @@
+require 'active_support/core_ext/class/attribute'
+require 'active_support/core_ext/object/inclusion'
+
 module ActiveRecord
   module AttributeMethods
     module TimeZoneConversion
@@ -7,7 +10,7 @@ module ActiveRecord
         cattr_accessor :time_zone_aware_attributes, :instance_writer => false
         self.time_zone_aware_attributes = false
 
-        class_inheritable_accessor :skip_time_zone_conversion_for_attributes, :instance_writer => false
+        class_attribute :skip_time_zone_conversion_for_attributes, :instance_writer => false
         self.skip_time_zone_conversion_for_attributes = []
       end
 
@@ -19,9 +22,9 @@ module ActiveRecord
           def define_method_attribute(attr_name)
             if create_time_zone_conversion_attribute?(attr_name, columns_hash[attr_name])
               method_body, line = <<-EOV, __LINE__ + 1
-                def _#{attr_name}(reload = false)
+                def _#{attr_name}
                   cached = @attributes_cache['#{attr_name}']
-                  return cached if cached && !reload
+                  return cached if cached
                   time = _read_attribute('#{attr_name}')
                   @attributes_cache['#{attr_name}'] = time.acts_like?(:time) ? time.in_time_zone : time
                 end
@@ -56,7 +59,7 @@ module ActiveRecord
 
         private
           def create_time_zone_conversion_attribute?(name, column)
-            time_zone_aware_attributes && !skip_time_zone_conversion_for_attributes.include?(name.to_sym) && [:datetime, :timestamp].include?(column.type)
+            time_zone_aware_attributes && !self.skip_time_zone_conversion_for_attributes.include?(name.to_sym) && column.type.in?([:datetime, :timestamp])
           end
       end
     end

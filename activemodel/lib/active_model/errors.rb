@@ -60,10 +60,12 @@ module ActiveModel
   #   p.validate!             # => ["can not be nil"]
   #   p.errors.full_messages  # => ["name can not be nil"]
   #   # etc..
-  class Errors < ActiveSupport::OrderedHash
-    include DeprecatedErrorMethods
+  class Errors
+    include Enumerable
 
     CALLBACKS_OPTIONS = [:if, :unless, :on, :allow_nil, :allow_blank]
+
+    attr_reader :messages
 
     # Pass in the instance of the object that is using the errors object.
     #
@@ -73,12 +75,38 @@ module ActiveModel
     #     end
     #   end
     def initialize(base)
-      @base = base
-      super()
+      @base     = base
+      @messages = ActiveSupport::OrderedHash.new
     end
 
-    alias_method :get, :[]
-    alias_method :set, :[]=
+    def initialize_dup(other)
+      @messages = other.messages.dup
+    end
+
+    # Clear the messages
+    def clear
+      messages.clear
+    end
+
+    # Do the error messages include an error with key +error+?
+    def include?(error)
+      (v = messages[error]) && v.any?
+    end
+
+    # Get messages for +key+
+    def get(key)
+      messages[key]
+    end
+
+    # Set messages for +key+ to +value+
+    def set(key, value)
+      messages[key] = value
+    end
+
+    # Delete messages for +key+
+    def delete(key)
+      messages.delete(key)
+    end
 
     # When passed a symbol or a name of a method, returns an array of errors
     # for the method.
@@ -94,7 +122,7 @@ module ActiveModel
     #   p.errors[:name] = "must be set"
     #   p.errors[:name] # => ['must be set']
     def []=(attribute, error)
-      self[attribute.to_sym] << error
+      self[attribute] << error
     end
 
     # Iterates through each error key, value pair in the error messages hash.
@@ -112,7 +140,7 @@ module ActiveModel
     #     # then yield :name and "must be specified"
     #   end
     def each
-      each_key do |attribute|
+      messages.each_key do |attribute|
         self[attribute].each { |error| yield attribute, error }
       end
     end
@@ -125,6 +153,16 @@ module ActiveModel
     #   p.errors.size # => 2
     def size
       values.flatten.size
+    end
+
+    # Returns all message values
+    def values
+      messages.values
+    end
+
+    # Returns all message keys
+    def keys
+      messages.keys
     end
 
     # Returns an array of error messages, with the attribute name included
@@ -145,7 +183,7 @@ module ActiveModel
       to_a.size
     end
 
-    # Returns true if there are any errors, false if not.
+    # Returns true if no errors are found, false otherwise.
     def empty?
       all? { |k, v| v && v.empty? }
     end
@@ -171,9 +209,7 @@ module ActiveModel
     end
 
     def to_hash
-      hash = ActiveSupport::OrderedHash.new
-      each { |k, v| (hash[k] ||= []) << v }
-      hash
+      messages.dup
     end
 
     # Adds +message+ to the error messages on +attribute+, which will be returned on a call to
@@ -197,13 +233,6 @@ module ActiveModel
 
     # Will add an error message to each of the attributes in +attributes+ that is empty.
     def add_on_empty(attributes, options = {})
-      if options && !options.is_a?(Hash)
-        options = { :message => options }
-        ActiveSupport::Deprecation.warn \
-          "ActiveModel::Errors#add_on_empty(attributes, custom_message) has been deprecated.\n" +
-          "Instead of passing a custom_message pass an options Hash { :message => custom_message }."
-      end
-
       [attributes].flatten.each do |attribute|
         value = @base.send(:read_attribute_for_validation, attribute)
         is_empty = value.respond_to?(:empty?) ? value.empty? : false
@@ -213,13 +242,6 @@ module ActiveModel
 
     # Will add an error message to each of the attributes in +attributes+ that is blank (using Object#blank?).
     def add_on_blank(attributes, options = {})
-      if options && !options.is_a?(Hash)
-        options = { :message => options }
-        ActiveSupport::Deprecation.warn \
-          "ActiveModel::Errors#add_on_blank(attributes, custom_message) has been deprecated.\n" +
-          "Instead of passing a custom_message pass an options Hash { :message => custom_message }."
-      end
-
       [attributes].flatten.each do |attribute|
         value = @base.send(:read_attribute_for_validation, attribute)
         add(attribute, :blank, options) if value.blank?
@@ -235,28 +257,22 @@ module ActiveModel
     #
     #   company = Company.create(:address => '123 First St.')
     #   company.errors.full_messages # =>
-    #     ["Name is too short (minimum is 5 characters)", "Name can't be blank", "Address can't be blank"]
+    #     ["Name is too short (minimum is 5 characters)", "Name can't be blank", "Email can't be blank"]
     def full_messages
-      full_messages = []
-
-      each do |attribute, messages|
-        messages = Array.wrap(messages)
-        next if messages.empty?
-
+      map { |attribute, message|
         if attribute == :base
-          messages.each {|m| full_messages << m }
+          message
         else
           attr_name = attribute.to_s.gsub('.', '_').humanize
           attr_name = @base.class.human_attribute_name(attribute, :default => attr_name)
-          options = { :default => "%{attribute} %{message}", :attribute => attr_name }
 
-          messages.each do |m|
-            full_messages << I18n.t(:"errors.format", options.merge(:message => m))
-          end
+          I18n.t(:"errors.format", {
+            :default   => "%{attribute} %{message}",
+            :attribute => attr_name,
+            :message   => message
+          })
         end
-      end
-
-      full_messages
+      }
     end
 
     # Translates an error message in its default scope
@@ -271,28 +287,20 @@ module ActiveModel
     # When using inheritance in your models, it will check all the inherited
     # models too, but only if the model itself hasn't been found. Say you have
     # <tt>class Admin < User; end</tt> and you wanted the translation for
-    # the <tt>:blank</tt> error +message+ for the <tt>title</tt> +attribute+,
+    # the <tt>:blank</tt> error message for the <tt>title</tt> attribute,
     # it looks for these translations:
     #
-    # <ol>
-    # <li><tt>activemodel.errors.models.admin.attributes.title.blank</tt></li>
-    # <li><tt>activemodel.errors.models.admin.blank</tt></li>
-    # <li><tt>activemodel.errors.models.user.attributes.title.blank</tt></li>
-    # <li><tt>activemodel.errors.models.user.blank</tt></li>
-    # <li>any default you provided through the +options+ hash (in the activemodel.errors scope)</li>
-    # <li><tt>activemodel.errors.messages.blank</tt></li>
-    # <li><tt>errors.attributes.title.blank</tt></li>
-    # <li><tt>errors.messages.blank</tt></li>
-    # </ol>
+    # * <tt>activemodel.errors.models.admin.attributes.title.blank</tt>
+    # * <tt>activemodel.errors.models.admin.blank</tt>
+    # * <tt>activemodel.errors.models.user.attributes.title.blank</tt>
+    # * <tt>activemodel.errors.models.user.blank</tt>
+    # * any default you provided through the +options+ hash (in the <tt>activemodel.errors</tt> scope)
+    # * <tt>activemodel.errors.messages.blank</tt>
+    # * <tt>errors.attributes.title.blank</tt>
+    # * <tt>errors.messages.blank</tt>
+    #
     def generate_message(attribute, type = :invalid, options = {})
       type = options.delete(:message) if options[:message].is_a?(Symbol)
-
-      if options[:default]
-        ActiveSupport::Deprecation.warn \
-          "Giving :default as validation option to errors.add has been deprecated.\n" +
-          "Please use :message instead."
-        options[:message] = options.delete(:default)
-      end
 
       defaults = @base.class.lookup_ancestors.map do |klass|
         [ :"#{@base.class.i18n_scope}.errors.models.#{klass.model_name.i18n_key}.attributes.#{attribute}.#{type}",

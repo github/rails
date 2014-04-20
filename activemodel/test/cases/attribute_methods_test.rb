@@ -69,10 +69,24 @@ class AttributeMethodsTest < ActiveModel::TestCase
                      ModelWithAttributes2.send(:attribute_method_matchers)
   end
 
+  test '#define_attribute_method generates attribute method' do
+    ModelWithAttributes.define_attribute_method(:foo)
+
+    assert_respond_to ModelWithAttributes.new, :foo
+    assert_equal "value of foo", ModelWithAttributes.new.foo
+  end
+
+  test '#define_attribute_method generates attribute method with invalid identifier characters' do
+    ModelWithWeirdNamesAttributes.define_attribute_method(:'a?b')
+    ModelWithWeirdNamesAttributes.define_attribute_method(:'a?b')
+
+    assert_respond_to ModelWithWeirdNamesAttributes.new, :'a?b'
+    assert_equal "value of a?b", ModelWithWeirdNamesAttributes.new.send('a?b')
+  end
+
   test '#define_attribute_methods generates attribute methods' do
     ModelWithAttributes.define_attribute_methods([:foo])
 
-    assert ModelWithAttributes.attribute_methods_generated?
     assert_respond_to ModelWithAttributes.new, :foo
     assert_equal "value of foo", ModelWithAttributes.new.foo
   end
@@ -113,7 +127,6 @@ class AttributeMethodsTest < ActiveModel::TestCase
     ModelWithAttributes.define_attribute_methods([:foo])
     ModelWithAttributes.undefine_attribute_methods
 
-    assert !ModelWithAttributes.attribute_methods_generated?
     assert !ModelWithAttributes.new.respond_to?(:foo)
     assert_raises(NoMethodError) { ModelWithAttributes.new.foo }
   end

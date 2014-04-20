@@ -1,30 +1,43 @@
+require 'active_support/core_ext/module/deprecation'
+
 module ActiveRecord
   module ConnectionAdapters # :nodoc:
     module DatabaseStatements
+      # Converts an arel AST to SQL
+      def to_sql(arel, binds = [])
+        if arel.respond_to?(:ast)
+          visitor.accept(arel.ast) do
+            quote(*binds.shift.reverse)
+          end
+        else
+          arel
+        end
+      end
+
       # Returns an array of record hashes with the column names as keys and
       # column values as values.
-      def select_all(sql, name = nil)
-        select(sql, name)
+      def select_all(arel, name = nil, binds = [])
+        select(to_sql(arel, binds), name, binds)
       end
 
       # Returns a record hash with the column names as keys and column values
       # as values.
-      def select_one(sql, name = nil)
-        result = select_all(sql, name)
+      def select_one(arel, name = nil)
+        result = select_all(arel, name)
         result.first if result
       end
 
       # Returns a single value from a record
-      def select_value(sql, name = nil)
-        if result = select_one(sql, name)
+      def select_value(arel, name = nil)
+        if result = select_one(arel, name)
           result.values.first
         end
       end
 
       # Returns an array of the values of the first column in a select:
       #   select_values("SELECT id FROM companies LIMIT 3") => [1,2,3]
-      def select_values(sql, name = nil)
-        result = select_rows(sql, name)
+      def select_values(arel, name = nil)
+        result = select_rows(to_sql(arel, []), name)
         result.map { |v| v[0] }
       end
 
@@ -35,23 +48,59 @@ module ActiveRecord
       undef_method :select_rows
 
       # Executes the SQL statement in the context of this connection.
-      def execute(sql, name = nil, skip_logging = false)
+      def execute(sql, name = nil)
       end
       undef_method :execute
 
+      # Executes +sql+ statement in the context of this connection using
+      # +binds+ as the bind substitutes.  +name+ is logged along with
+      # the executed +sql+ statement.
+      def exec_query(sql, name = 'SQL', binds = [])
+      end
+
+      # Executes insert +sql+ statement in the context of this connection using
+      # +binds+ as the bind substitutes. +name+ is the logged along with
+      # the executed +sql+ statement.
+      def exec_insert(sql, name, binds)
+        exec_query(sql, name, binds)
+      end
+
+      # Executes delete +sql+ statement in the context of this connection using
+      # +binds+ as the bind substitutes. +name+ is the logged along with
+      # the executed +sql+ statement.
+      def exec_delete(sql, name, binds)
+        exec_query(sql, name, binds)
+      end
+
+      # Executes update +sql+ statement in the context of this connection using
+      # +binds+ as the bind substitutes. +name+ is the logged along with
+      # the executed +sql+ statement.
+      def exec_update(sql, name, binds)
+        exec_query(sql, name, binds)
+      end
+
       # Returns the last auto-generated ID from the affected table.
-      def insert(sql, name = nil, pk = nil, id_value = nil, sequence_name = nil)
-        insert_sql(sql, name, pk, id_value, sequence_name)
+      #
+      # +id_value+ will be returned unless the value is nil, in
+      # which case the database will attempt to calculate the last inserted
+      # id and return that value.
+      #
+      # If the next id was calculated in advance (as in Oracle), it should be
+      # passed in as +id_value+.
+      def insert(arel, name = nil, pk = nil, id_value = nil, sequence_name = nil, binds = [])
+        sql, binds = sql_for_insert(to_sql(arel, binds), pk, id_value, sequence_name, binds)
+        value      = exec_insert(sql, name, binds)
+        id_value || last_inserted_id(value)
       end
 
       # Executes the update statement and returns the number of rows affected.
-      def update(sql, name = nil)
-        update_sql(sql, name)
+      def update(arel, name = nil, binds = [])
+        exec_update(to_sql(arel, binds), name, binds)
       end
 
       # Executes the delete statement and returns the number of rows affected.
-      def delete(sql, name = nil)
-        delete_sql(sql, name)
+      def delete(arel, name = nil, binds = [])
+        exec_delete(to_sql(arel, binds), name, binds)
       end
 
       # Checks whether there is currently no transaction active. This is done
@@ -68,6 +117,12 @@ module ActiveRecord
         nil
       end
 
+      # Returns +true+ when the connection adapter supports prepared statement
+      # caching, otherwise returns +false+
+      def supports_statement_cache?
+        false
+      end
+
       # Runs the given block in a database transaction, and returns the result
       # of the block.
       #
@@ -79,7 +134,7 @@ module ActiveRecord
       #
       # In order to get around this problem, #transaction will emulate the effect
       # of nested transactions, by using savepoints:
-      # http://dev.mysql.com/doc/refman/5.0/en/savepoints.html
+      # http://dev.mysql.com/doc/refman/5.0/en/savepoint.html
       # Savepoints are supported by MySQL and PostgreSQL, but not SQLite3.
       #
       # It is safe to call this method if a database transaction is already open,
@@ -209,11 +264,12 @@ module ActiveRecord
       #
       # This method *modifies* the +sql+ parameter.
       #
+      # This method is deprecated!! Stop using it!
+      #
       # ===== Examples
       #  add_limit_offset!('SELECT * FROM suppliers', {:limit => 10, :offset => 50})
       # generates
       #  SELECT * FROM suppliers LIMIT 10 OFFSET 50
-
       def add_limit_offset!(sql, options)
         if limit = options[:limit]
           sql << " LIMIT #{sanitize_limit(limit)}"
@@ -223,6 +279,7 @@ module ActiveRecord
         end
         sql
       end
+      deprecate :add_limit_offset!
 
       def default_sequence_name(table, column)
         nil
@@ -236,7 +293,15 @@ module ActiveRecord
       # Inserts the given fixture into the table. Overridden in adapters that require
       # something beyond a simple insert (eg. Oracle).
       def insert_fixture(fixture, table_name)
-        execute "INSERT INTO #{quote_table_name(table_name)} (#{fixture.key_list}) VALUES (#{fixture.value_list})", 'Fixture Insert'
+        columns = Hash[columns(table_name).map { |c| [c.name, c] }]
+
+        key_list   = []
+        value_list = fixture.map do |name, value|
+          key_list << quote_column_name(name)
+          quote(value, columns[name])
+        end
+
+        execute "INSERT INTO #{quote_table_name(table_name)} (#{key_list.join(', ')}) VALUES (#{value_list.join(', ')})", 'Fixture Insert'
       end
 
       def empty_insert_statement_value
@@ -270,10 +335,20 @@ module ActiveRecord
         end
       end
 
+      # The default strategy for an UPDATE with joins is to use a subquery. This doesn't work
+      # on mysql (even when aliasing the tables), but mysql allows using JOIN directly in
+      # an UPDATE statement, so in the mysql adapters we redefine this to do that.
+      def join_to_update(update, select) #:nodoc:
+        subselect = select.clone
+        subselect.projections = [update.key]
+
+        update.where update.key.in(subselect)
+      end
+
       protected
         # Returns an array of record hashes with the column names as keys and
         # column values as values.
-        def select(sql, name = nil)
+        def select(sql, name = nil, binds = [])
         end
         undef_method :select
 
@@ -328,6 +403,15 @@ module ActiveRecord
             end
           end
         end
+
+      def sql_for_insert(sql, pk, id_value, sequence_name, binds)
+        [sql, binds]
+      end
+
+      def last_inserted_id(result)
+        row = result.rows.first
+        row && row.first
+      end
     end
   end
 end

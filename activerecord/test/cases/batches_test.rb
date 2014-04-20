@@ -7,6 +7,7 @@ class EachTest < ActiveRecord::TestCase
   def setup
     @posts = Post.order("id asc")
     @total = Post.count
+    Post.count('id') # preheat arel's table cache
   end
 
   def test_each_should_excecute_one_query_per_batch
@@ -31,7 +32,7 @@ class EachTest < ActiveRecord::TestCase
   end
 
   def test_each_should_execute_if_id_is_in_select
-    assert_queries(4) do
+    assert_queries(6) do
       Post.find_each(:select => "id, title, type", :batch_size => 2) do |post|
         assert_kind_of Post, post
       end
@@ -99,4 +100,26 @@ class EachTest < ActiveRecord::TestCase
       end
     end
   end
+
+  def test_find_in_batches_should_ignore_the_order_default_scope
+    # First post is with title scope
+    first_post = PostWithDefaultScope.first
+    posts = []
+    PostWithDefaultScope.find_in_batches  do |batch|
+      posts.concat(batch)
+    end
+    # posts.first will be ordered using id only. Title order scope should not apply here
+    assert_not_equal first_post, posts.first
+    assert_equal posts(:welcome), posts.first
+  end
+
+  def test_find_in_batches_should_not_ignore_the_default_scope_if_it_is_other_then_order
+    special_posts_ids = SpecialPostWithDefaultScope.all.map(&:id).sort
+    posts = []
+    SpecialPostWithDefaultScope.find_in_batches do |batch|
+      posts.concat(batch)
+    end
+    assert_equal special_posts_ids, posts.map(&:id)
+  end
+
 end

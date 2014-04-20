@@ -338,13 +338,13 @@ class DirtyTest < ActiveRecord::TestCase
     assert !pirate.changed?
   end
 
-  def test_cloned_objects_should_not_copy_dirty_flag_from_creator
+  def test_dup_objects_should_not_copy_dirty_flag_from_creator
     pirate = Pirate.create!(:catchphrase => "shiver me timbers")
-    pirate_clone = pirate.clone
-    pirate_clone.reset_catchphrase!
+    pirate_dup = pirate.dup
+    pirate_dup.reset_catchphrase!
     pirate.catchphrase = "I love Rum"
     assert pirate.catchphrase_changed?
-    assert !pirate_clone.catchphrase_changed?
+    assert !pirate_dup.catchphrase_changed?
   end
 
   def test_reverted_changes_are_not_dirty
@@ -395,11 +395,25 @@ class DirtyTest < ActiveRecord::TestCase
     end
   end
 
+  def test_save_always_should_update_timestamps_when_serialized_attributes_are_present
+    with_partial_updates(Topic) do
+      topic = Topic.create!(:content => {:a => "a"})
+      topic.save!
+
+      updated_at = topic.updated_at
+      topic.content[:hello] = 'world'
+      topic.save!
+
+      assert_not_equal updated_at, topic.updated_at
+      assert_equal 'world', topic.content[:hello]
+    end
+  end
+
   def test_save_should_not_save_serialized_attribute_with_partial_updates_if_not_present
     with_partial_updates(Topic) do
       Topic.create!(:author_name => 'Bill', :content => {:a => "a"})
       topic = Topic.select('id, author_name').first
-      topic.update_attribute :author_name, 'John'
+      topic.update_column :author_name, 'John'
       topic = Topic.first
       assert_not_nil topic.content
     end

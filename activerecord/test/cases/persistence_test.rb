@@ -12,7 +12,7 @@ require 'models/minimalistic'
 require 'models/warehouse_thing'
 require 'models/parrot'
 require 'models/minivan'
-require 'models/loose_person'
+require 'models/person'
 require 'rexml/document'
 require 'active_support/core_ext/exception'
 
@@ -27,6 +27,26 @@ class PersistencesTest < ActiveRecord::TestCase
       assert_nothing_raised do
         assert_equal author.posts_with_comments_and_categories.length,
           author.posts_with_comments_and_categories.update_all([ "body = ?", "bulk update!" ])
+      end
+    end
+
+    def test_update_all_doesnt_ignore_order
+      assert_equal authors(:david).id + 1, authors(:mary).id # make sure there is going to be a duplicate PK error
+      test_update_with_order_succeeds = lambda do |order|
+        begin
+          Author.order(order).update_all('id = id + 1')
+        rescue ActiveRecord::ActiveRecordError
+          false
+        end
+      end
+
+      if test_update_with_order_succeeds.call('id DESC')
+        assert !test_update_with_order_succeeds.call('id ASC') # test that this wasn't a fluke and using an incorrect order results in an exception
+      else
+        # test that we're failing because the current Arel's engine doesn't support UPDATE ORDER BY queries is using subselects instead
+        assert_sql(/\AUPDATE .+ \(SELECT .* ORDER BY id DESC\)\Z/i) do
+          test_update_with_order_succeeds.call('id DESC')
+        end
       end
     end
 
@@ -193,7 +213,6 @@ class PersistencesTest < ActiveRecord::TestCase
     topic = Topic.create("title" => "New Topic") do |t|
       t.author_name = "David"
     end
-    topicReloaded = Topic.find(topic.id)
     assert_equal("New Topic", topic.title)
     assert_equal("David", topic.author_name)
   end
@@ -242,6 +261,15 @@ class PersistencesTest < ActiveRecord::TestCase
     assert_nothing_raised { minimalistic.save }
   end
 
+  def test_update_sti_type
+    assert_instance_of Reply, topics(:second)
+
+    topic = topics(:second).becomes(Topic)
+    assert_instance_of Topic, topic
+    topic.save!
+    assert_instance_of Topic, Topic.find(topic.id)
+  end
+
   def test_delete
     topic = Topic.find(1)
     assert_equal topic, topic.delete, 'topic.delete did not return self'
@@ -262,7 +290,7 @@ class PersistencesTest < ActiveRecord::TestCase
   end
 
   def test_record_not_found_exception
-    assert_raise(ActiveRecord::RecordNotFound) { topicReloaded = Topic.find(99999) }
+    assert_raise(ActiveRecord::RecordNotFound) { Topic.find(99999) }
   end
 
   def test_update_all
@@ -329,6 +357,10 @@ class PersistencesTest < ActiveRecord::TestCase
     assert !Topic.find(1).approved?
   end
 
+  def test_update_attribute_does_not_choke_on_nil
+    assert Topic.find(1).update_attributes(nil)
+  end
+
   def test_update_attribute_for_readonly_attribute
     minivan = Minivan.find('m1')
     assert_raises(ActiveRecord::ActiveRecordError) { minivan.update_attribute(:color, 'black') }
@@ -382,6 +414,92 @@ class PersistencesTest < ActiveRecord::TestCase
     assert_not_equal prev_month, developer.updated_at
   end
 
+  def test_update_column
+    topic = Topic.find(1)
+    topic.update_column("approved", true)
+    assert topic.approved?
+    topic.reload
+    assert topic.approved?
+
+    topic.update_column(:approved, false)
+    assert !topic.approved?
+    topic.reload
+    assert !topic.approved?
+  end
+
+  def test_update_column_should_not_use_setter_method
+    dev = Developer.find(1)
+    dev.instance_eval { def salary=(value); write_attribute(:salary, value * 2); end }
+
+    dev.update_column(:salary, 80000)
+    assert_equal 80000, dev.salary
+
+    dev.reload
+    assert_equal 80000, dev.salary
+  end
+
+  def test_update_column_should_raise_exception_if_new_record
+    topic = Topic.new
+    assert_raises(ActiveRecord::ActiveRecordError) { topic.update_column("approved", false) }
+  end
+
+  def test_update_column_should_not_leave_the_object_dirty
+    topic = Topic.find(1)
+    topic.update_attribute("content", "Have a nice day")
+
+    topic.reload
+    topic.update_column(:content, "You too")
+    assert_equal [], topic.changed
+
+    topic.reload
+    topic.update_column("content", "Have a nice day")
+    assert_equal [], topic.changed
+  end
+
+  def test_update_column_with_model_having_primary_key_other_than_id
+    minivan = Minivan.find('m1')
+    new_name = 'sebavan'
+
+    minivan.update_column(:name, new_name)
+    assert_equal new_name, minivan.name
+  end
+
+  def test_update_column_for_readonly_attribute
+    minivan = Minivan.find('m1')
+    prev_color = minivan.color
+    assert_raises(ActiveRecord::ActiveRecordError) { minivan.update_column(:color, 'black') }
+    assert_equal prev_color, minivan.color
+  end
+
+  def test_update_column_should_not_modify_updated_at
+    developer = Developer.find(1)
+    prev_month = Time.now.prev_month
+
+    developer.update_column(:updated_at, prev_month)
+    assert_equal prev_month, developer.updated_at
+
+    developer.update_column(:salary, 80001)
+    assert_equal prev_month, developer.updated_at
+
+    developer.reload
+    assert_equal prev_month.to_i, developer.updated_at.to_i
+  end
+
+  def test_update_column_with_one_changed_and_one_updated
+    t = Topic.order('id').limit(1).first
+    title, author_name = t.title, t.author_name
+    t.author_name = 'John'
+    t.update_column(:title, 'super_title')
+    assert_equal 'John', t.author_name
+    assert_equal 'super_title', t.title
+    assert t.changed?, "topic should have changed"
+    assert t.author_name_changed?, "author_name should have changed"
+
+    t.reload
+    assert_equal author_name, t.author_name
+    assert_equal 'super_title', t.title
+  end
+
   def test_update_attributes
     topic = Topic.find(1)
     assert !topic.approved?
@@ -396,6 +514,26 @@ class PersistencesTest < ActiveRecord::TestCase
     topic.reload
     assert !topic.approved?
     assert_equal "The First Topic", topic.title
+  end
+
+  def test_update_attributes_as_admin
+    person = TightPerson.create({ "first_name" => 'Joshua' })
+    person.update_attributes({ "first_name" => 'Josh', "gender" => 'm', "comments" => 'from NZ' }, :as => :admin)
+    person.reload
+
+    assert_equal 'Josh',    person.first_name
+    assert_equal 'm',       person.gender
+    assert_equal 'from NZ', person.comments
+  end
+
+  def test_update_attributes_without_protection
+    person = TightPerson.create({ "first_name" => 'Joshua' })
+    person.update_attributes({ "first_name" => 'Josh', "gender" => 'm', "comments" => 'from NZ' }, :without_protection => true)
+    person.reload
+
+    assert_equal 'Josh',    person.first_name
+    assert_equal 'm',       person.gender
+    assert_equal 'from NZ', person.comments
   end
 
   def test_update_attributes!
@@ -419,10 +557,30 @@ class PersistencesTest < ActiveRecord::TestCase
     Reply.reset_callbacks(:validate)
   end
 
+  def test_update_attributes_with_bang_as_admin
+    person = TightPerson.create({ "first_name" => 'Joshua' })
+    person.update_attributes!({ "first_name" => 'Josh', "gender" => 'm', "comments" => 'from NZ' }, :as => :admin)
+    person.reload
+
+    assert_equal 'Josh', person.first_name
+    assert_equal 'm',    person.gender
+    assert_equal 'from NZ', person.comments
+  end
+
+  def test_update_attributestes_with_bang_without_protection
+    person = TightPerson.create({ "first_name" => 'Joshua' })
+    person.update_attributes!({ "first_name" => 'Josh', "gender" => 'm', "comments" => 'from NZ' }, :without_protection => true)
+    person.reload
+
+    assert_equal 'Josh', person.first_name
+    assert_equal 'm',    person.gender
+    assert_equal 'from NZ', person.comments
+  end
+
   def test_destroyed_returns_boolean
     developer = Developer.first
     assert_equal false, developer.destroyed?
-    ActiveSupport::Deprecation.silence { developer.destroy }
+    developer.destroy
     assert_equal true, developer.destroyed?
 
     developer = Developer.last
@@ -439,7 +597,7 @@ class PersistencesTest < ActiveRecord::TestCase
 
     developer = Developer.first
     assert_equal true, developer.persisted?
-    ActiveSupport::Deprecation.silence { developer.destroy }
+    developer.destroy
     assert_equal false, developer.persisted?
 
     developer = Developer.last

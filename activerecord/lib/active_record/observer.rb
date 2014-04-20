@@ -11,7 +11,7 @@ module ActiveRecord
   #
   #   class CommentObserver < ActiveRecord::Observer
   #     def after_save(comment)
-  #       Notifications.deliver_comment("admin@do.com", "New comment was posted", comment)
+  #       Notifications.comment("admin@do.com", "New comment was posted", comment).deliver
   #     end
   #   end
   #
@@ -90,15 +90,11 @@ module ActiveRecord
   #
   class Observer < ActiveModel::Observer
 
-    def initialize
-      super
-      observed_descendants.each { |klass| add_observer!(klass) }
-    end
-
     protected
 
-      def observed_descendants
-        observed_classes.sum([]) { |klass| klass.descendants }
+      def observed_classes
+        klasses = super
+        klasses + klasses.map { |klass| klass.descendants }.flatten
       end
 
       def add_observer!(klass)
@@ -114,8 +110,8 @@ module ActiveRecord
           next unless respond_to?(callback)
           callback_meth = :"_notify_#{observer_name}_for_#{callback}"
           unless klass.respond_to?(callback_meth)
-            klass.send(:define_method, callback_meth) do
-              observer.send(callback, self)
+            klass.send(:define_method, callback_meth) do |&block|
+              observer.update(callback, self, &block)
             end
             klass.send(callback, callback_meth)
           end

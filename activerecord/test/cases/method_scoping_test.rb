@@ -14,7 +14,7 @@ class MethodScopingTest < ActiveRecord::TestCase
 
   def test_set_conditions
     Developer.send(:with_scope, :find => { :conditions => 'just a test...' }) do
-      assert_equal '(just a test...)', Developer.scoped.arel.send(:where_clauses).join(' AND ')
+      assert_match '(just a test...)', Developer.scoped.to_sql
     end
   end
 
@@ -68,7 +68,7 @@ class MethodScopingTest < ActiveRecord::TestCase
 
   def test_scoped_find_all
     Developer.send(:with_scope, :find => { :conditions => "name = 'David'" }) do
-      assert_equal [developers(:david)], Developer.find(:all)
+      assert_equal [developers(:david)], Developer.all
     end
   end
 
@@ -103,10 +103,8 @@ class MethodScopingTest < ActiveRecord::TestCase
 
   def test_scoped_find_include
     # with the include, will retrieve only developers for the given project
-    scoped_developers = ActiveSupport::Deprecation.silence do
-      Developer.send(:with_scope, :find => { :include => :projects }) do
-        Developer.find(:all, :conditions => 'projects.id = 2')
-      end
+    scoped_developers = Developer.send(:with_scope, :find => { :include => :projects }) do
+      Developer.find(:all, :conditions => 'projects.id = 2')
     end
     assert scoped_developers.include?(developers(:david))
     assert !scoped_developers.include?(developers(:jamis))
@@ -214,14 +212,14 @@ class MethodScopingTest < ActiveRecord::TestCase
     table = VerySpecialComment.arel_table
     relation = VerySpecialComment.scoped
     relation.where_values << table[:id].not_eq(1)
-    assert_equal({:type => "VerySpecialComment"}, relation.send(:scope_for_create))
+    assert_equal({'type' => "VerySpecialComment"}, relation.send(:scope_for_create))
   end
 
   def test_scoped_create
     new_comment = nil
 
     VerySpecialComment.send(:with_scope, :create => { :post_id => 1 }) do
-      assert_equal({:post_id => 1, :type => 'VerySpecialComment' }, VerySpecialComment.scoped.send(:scope_for_create))
+      assert_equal({'post_id' => 1, 'type' => 'VerySpecialComment' }, VerySpecialComment.scoped.send(:scope_for_create))
       new_comment = VerySpecialComment.create :body => "Wonderful world"
     end
 
@@ -230,43 +228,42 @@ class MethodScopingTest < ActiveRecord::TestCase
 
   def test_scoped_create_with_join_and_merge
     Comment.where(:body => "but Who's Buying?").joins(:post).merge(Post.where(:body => 'Peace Sells...')).with_scope do
-      assert_equal({:body => "but Who's Buying?"}, Comment.scoped.scope_for_create)
+      assert_equal({'body' => "but Who's Buying?"}, Comment.scoped.scope_for_create)
     end
   end
 
   def test_immutable_scope
     options = { :conditions => "name = 'David'" }
     Developer.send(:with_scope, :find => options) do
-      assert_equal %w(David), Developer.find(:all).map { |d| d.name }
+      assert_equal %w(David), Developer.all.map(&:name)
       options[:conditions] = "name != 'David'"
-      assert_equal %w(David), Developer.find(:all).map { |d| d.name }
+      assert_equal %w(David), Developer.all.map(&:name)
     end
 
     scope = { :find => { :conditions => "name = 'David'" }}
     Developer.send(:with_scope, scope) do
-      assert_equal %w(David), Developer.find(:all).map { |d| d.name }
+      assert_equal %w(David), Developer.all.map(&:name)
       scope[:find][:conditions] = "name != 'David'"
-      assert_equal %w(David), Developer.find(:all).map { |d| d.name }
+      assert_equal %w(David), Developer.all.map(&:name)
     end
   end
 
   def test_scoped_with_duck_typing
-    scoping = Struct.new(:method_scoping).new(:find => { :conditions => ["name = ?", 'David'] })
+    scoping = Struct.new(:current_scope).new(:find => { :conditions => ["name = ?", 'David'] })
     Developer.send(:with_scope, scoping) do
-       assert_equal %w(David), Developer.find(:all).map { |d| d.name }
+       assert_equal %w(David), Developer.all.map(&:name)
     end
   end
 
   def test_ensure_that_method_scoping_is_correctly_restored
-    scoped_methods = Developer.instance_eval('current_scoped_methods')
-
     begin
       Developer.send(:with_scope, :find => { :conditions => "name = 'Jamis'" }) do
         raise "an exception"
       end
     rescue
     end
-    assert_equal scoped_methods, Developer.instance_eval('current_scoped_methods')
+
+    assert !Developer.scoped.where_values.include?("name = 'Jamis'")
   end
 end
 
@@ -277,7 +274,7 @@ class NestedScopingTest < ActiveRecord::TestCase
     Developer.send(:with_scope, :find => { :conditions => 'salary = 80000' }) do
       Developer.send(:with_scope, :find => { :limit => 10 }) do
         devs = Developer.scoped
-        assert_equal '(salary = 80000)', devs.arel.send(:where_clauses).join(' AND ')
+        assert_match '(salary = 80000)', devs.to_sql
         assert_equal 10, devs.taken
       end
     end
@@ -311,7 +308,7 @@ class NestedScopingTest < ActiveRecord::TestCase
     Developer.send(:with_scope, :find => { :conditions => "name = 'David'" }) do
       Developer.send(:with_scope, :find => { :conditions => 'salary = 80000' }) do
         devs = Developer.scoped
-        assert_equal "(name = 'David') AND (salary = 80000)", devs.arel.send(:where_clauses).join(' AND ')
+        assert_match "(name = 'David') AND (salary = 80000)", devs.to_sql
         assert_equal(1, Developer.count)
       end
       Developer.send(:with_scope, :find => { :conditions => "name = 'Maiha'" }) do
@@ -324,7 +321,7 @@ class NestedScopingTest < ActiveRecord::TestCase
     Developer.send(:with_scope, :find => { :conditions => 'salary = 80000', :limit => 10 }) do
       Developer.send(:with_scope, :find => { :conditions => "name = 'David'" }) do
         devs = Developer.scoped
-        assert_equal "(salary = 80000) AND (name = 'David')", devs.arel.send(:where_clauses).join(' AND ')
+        assert_match "(salary = 80000) AND (name = 'David')", devs.to_sql
         assert_equal 10, devs.taken
       end
     end
@@ -341,50 +338,44 @@ class NestedScopingTest < ActiveRecord::TestCase
   end
 
   def test_nested_scoped_find_include
-    ActiveSupport::Deprecation.silence do
-      Developer.send(:with_scope, :find => { :include => :projects }) do
-        Developer.send(:with_scope, :find => { :conditions => "projects.id = 2" }) do
-          assert_nothing_raised { Developer.find(1) }
-          assert_equal('David', Developer.find(:first).name)
-        end
+    Developer.send(:with_scope, :find => { :include => :projects }) do
+      Developer.send(:with_scope, :find => { :conditions => "projects.id = 2" }) do
+        assert_nothing_raised { Developer.find(1) }
+        assert_equal('David', Developer.find(:first).name)
       end
     end
   end
 
   def test_nested_scoped_find_merged_include
     # :include's remain unique and don't "double up" when merging
-    ActiveSupport::Deprecation.silence do
-      Developer.send(:with_scope, :find => { :include => :projects, :conditions => "projects.id = 2" }) do
-        Developer.send(:with_scope, :find => { :include => :projects }) do
-          assert_equal 1, Developer.scoped.includes_values.uniq.length
-          assert_equal 'David', Developer.find(:first).name
-        end
+    Developer.send(:with_scope, :find => { :include => :projects, :conditions => "projects.id = 2" }) do
+      Developer.send(:with_scope, :find => { :include => :projects }) do
+        assert_equal 1, Developer.scoped.includes_values.uniq.length
+        assert_equal 'David', Developer.find(:first).name
       end
+    end
 
-      # the nested scope doesn't remove the first :include
-      Developer.send(:with_scope, :find => { :include => :projects, :conditions => "projects.id = 2" }) do
-        Developer.send(:with_scope, :find => { :include => [] }) do
-          assert_equal 1, Developer.scoped.includes_values.uniq.length
-          assert_equal('David', Developer.find(:first).name)
-        end
+    # the nested scope doesn't remove the first :include
+    Developer.send(:with_scope, :find => { :include => :projects, :conditions => "projects.id = 2" }) do
+      Developer.send(:with_scope, :find => { :include => [] }) do
+        assert_equal 1, Developer.scoped.includes_values.uniq.length
+        assert_equal('David', Developer.find(:first).name)
       end
+    end
 
-      # mixing array and symbol include's will merge correctly
-      Developer.send(:with_scope, :find => { :include => [:projects], :conditions => "projects.id = 2" }) do
-        Developer.send(:with_scope, :find => { :include => :projects }) do
-          assert_equal 1, Developer.scoped.includes_values.uniq.length
-          assert_equal('David', Developer.find(:first).name)
-        end
+    # mixing array and symbol include's will merge correctly
+    Developer.send(:with_scope, :find => { :include => [:projects], :conditions => "projects.id = 2" }) do
+      Developer.send(:with_scope, :find => { :include => :projects }) do
+        assert_equal 1, Developer.scoped.includes_values.uniq.length
+        assert_equal('David', Developer.find(:first).name)
       end
     end
   end
 
   def test_nested_scoped_find_replace_include
-    ActiveSupport::Deprecation.silence do
-      Developer.send(:with_scope, :find => { :include => :projects }) do
-        Developer.send(:with_exclusive_scope, :find => { :include => [] }) do
-          assert_equal 0, Developer.scoped.includes_values.length
-        end
+    Developer.send(:with_scope, :find => { :include => :projects }) do
+      Developer.send(:with_exclusive_scope, :find => { :include => [] }) do
+        assert_equal 0, Developer.scoped.includes_values.length
       end
     end
   end
@@ -441,7 +432,7 @@ class NestedScopingTest < ActiveRecord::TestCase
   def test_merged_scoped_find_combines_and_sanitizes_conditions
     Developer.send(:with_scope, :find => { :conditions => ["name = ?", 'David'] }) do
       Developer.send(:with_scope, :find => { :conditions => ['salary > ?', 9000] }) do
-        assert_equal %w(David), Developer.find(:all).map { |d| d.name }
+        assert_equal %w(David), Developer.all.map(&:name)
       end
     end
   end
@@ -450,7 +441,7 @@ class NestedScopingTest < ActiveRecord::TestCase
     comment = nil
     Comment.send(:with_scope, :create => { :post_id => 1}) do
       Comment.send(:with_scope, :create => { :post_id => 2}) do
-        assert_equal({:post_id => 2}, Comment.scoped.send(:scope_for_create))
+        assert_equal({'post_id' => 2}, Comment.scoped.send(:scope_for_create))
         comment = Comment.create :body => "Hey guys, nested scopes are broken. Please fix!"
       end
     end
@@ -462,7 +453,7 @@ class NestedScopingTest < ActiveRecord::TestCase
 
     Comment.send(:with_scope, :create => { :body => "Hey guys, nested scopes are broken. Please fix!" }) do
       Comment.send(:with_exclusive_scope, :create => { :post_id => 1 }) do
-        assert_equal({:post_id => 1}, Comment.scoped.send(:scope_for_create))
+        assert_equal({'post_id' => 1}, Comment.scoped.send(:scope_for_create))
         assert_blank Comment.new.body
         comment = Comment.create :body => "Hey guys"
       end
@@ -496,9 +487,9 @@ class NestedScopingTest < ActiveRecord::TestCase
     options2 = { :conditions => "name = 'David'" }
     Developer.send(:with_scope, :find => options1) do
       Developer.send(:with_exclusive_scope, :find => options2) do
-        assert_equal %w(David), Developer.find(:all).map { |d| d.name }
+        assert_equal %w(David), Developer.all.map(&:name)
         options1[:conditions] = options2[:conditions] = nil
-        assert_equal %w(David), Developer.find(:all).map { |d| d.name }
+        assert_equal %w(David), Developer.all.map(&:name)
       end
     end
   end
@@ -508,23 +499,24 @@ class NestedScopingTest < ActiveRecord::TestCase
     options2 = { :conditions => "salary > 10000" }
     Developer.send(:with_scope, :find => options1) do
       Developer.send(:with_scope, :find => options2) do
-        assert_equal %w(Jamis), Developer.find(:all).map { |d| d.name }
+        assert_equal %w(Jamis), Developer.all.map(&:name)
         options1[:conditions] = options2[:conditions] = nil
-        assert_equal %w(Jamis), Developer.find(:all).map { |d| d.name }
+        assert_equal %w(Jamis), Developer.all.map(&:name)
       end
     end
   end
 
   def test_ensure_that_method_scoping_is_correctly_restored
     Developer.send(:with_scope, :find => { :conditions => "name = 'David'" }) do
-      scoped_methods = Developer.instance_eval('current_scoped_methods')
       begin
         Developer.send(:with_scope, :find => { :conditions => "name = 'Maiha'" }) do
           raise "an exception"
         end
       rescue
       end
-      assert_equal scoped_methods, Developer.instance_eval('current_scoped_methods')
+
+      assert Developer.scoped.where_values.include?("name = 'David'")
+      assert !Developer.scoped.where_values.include?("name = 'Maiha'")
     end
   end
 

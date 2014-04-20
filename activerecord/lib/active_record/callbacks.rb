@@ -31,7 +31,7 @@ module ActiveRecord
   #
   # That's a total of twelve callbacks, which gives you immense power to react and prepare for each state in the
   # Active Record life cycle. The sequence for calling <tt>Base#save</tt> for an existing record is similar,
-  # except that each <tt>_on_create</tt> callback is replaced by the corresponding <tt>_on_update</tt> callback.
+  # except that each <tt>_create</tt> callback is replaced by the corresponding <tt>_update</tt> callback.
   #
   # Examples:
   #   class CreditCard < ActiveRecord::Base
@@ -73,7 +73,7 @@ module ActiveRecord
   #
   # Now, when <tt>Topic#destroy</tt> is run only +destroy_author+ is called. When <tt>Reply#destroy</tt> is
   # run, both +destroy_author+ and +destroy_readers+ are called. Contrast this to the following situation
-  # where the +before_destroy+ methis is overriden:
+  # where the +before_destroy+ method is overridden:
   #
   #   class Topic < ActiveRecord::Base
   #     def before_destroy() destroy_author end
@@ -215,15 +215,23 @@ module ActiveRecord
   # instead of quietly returning +false+.
   #
   # == Debugging callbacks
-  #
-  # To list the methods and procs registered with a particular callback, append <tt>_callback_chain</tt> to
-  # the callback name that you wish to list and send that to your class from the Rails console:
-  #
-  #   >> Topic.after_save_callback_chain
-  #   => [#<ActiveSupport::Callbacks::Callback:0x3f6a448
-  #       @method=#<Proc:0x03f9a42c@/Users/foo/bar/app/models/topic.rb:43>, kind:after_save, identifiernil,
-  #       options{}]
-  #
+  # 
+  # The callback chain is accessible via the <tt>_*_callbacks</tt> method on an object. ActiveModel Callbacks support 
+  # <tt>:before</tt>, <tt>:after</tt> and <tt>:around</tt> as values for the <tt>kind</tt> property. The <tt>kind</tt> property
+  # defines what part of the chain the callback runs in.
+  # 
+  # To find all callbacks in the before_save callback chain: 
+  # 
+  #   Topic._save_callbacks.select { |cb| cb.kind.eql?(:before) }
+  # 
+  # Returns an array of callback objects that form the before_save chain.
+  # 
+  # To further check if the before_save chain contains a proc defined as <tt>rest_when_dead</tt> use the <tt>filter</tt> property of the callback object:
+  # 
+  #   Topic._save_callbacks.select { |cb| cb.kind.eql?(:before) }.collect(&:filter).include?(:rest_when_dead)
+  # 
+  # Returns true or false depending on whether the proc is contained in the before_save callback chain on a Topic model.
+  # 
   module Callbacks
     extend ActiveSupport::Concern
 
@@ -242,43 +250,26 @@ module ActiveRecord
       define_model_callbacks :save, :create, :update, :destroy
     end
 
-    module ClassMethods
-      def method_added(meth)
-        super
-        if CALLBACKS.include?(meth.to_sym)
-          ActiveSupport::Deprecation.warn("Base##{meth} has been deprecated, please use Base.#{meth} :method instead", caller[0,1])
-          send(meth.to_sym, meth.to_sym)
-        end
-      end
-    end
-
     def destroy #:nodoc:
-      _run_destroy_callbacks { super }
+      run_callbacks(:destroy) { super }
     end
 
     def touch(*) #:nodoc:
-      _run_touch_callbacks { super }
-    end
-
-    def deprecated_callback_method(symbol) #:nodoc:
-      if respond_to?(symbol, true)
-        ActiveSupport::Deprecation.warn("Overwriting #{symbol} in your models has been deprecated, please use Base.#{symbol} :method_name instead")
-        send(symbol)
-      end
+      run_callbacks(:touch) { super }
     end
 
   private
 
     def create_or_update #:nodoc:
-      _run_save_callbacks { super }
+      run_callbacks(:save) { super }
     end
 
     def create #:nodoc:
-      _run_create_callbacks { super }
+      run_callbacks(:create) { super }
     end
 
     def update(*) #:nodoc:
-      _run_update_callbacks { super }
+      run_callbacks(:update) { super }
     end
   end
 end

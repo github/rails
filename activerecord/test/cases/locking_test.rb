@@ -1,9 +1,11 @@
 require 'thread'
 require "cases/helper"
 require 'models/person'
+require 'models/job'
 require 'models/reader'
 require 'models/legacy_thing'
 require 'models/reference'
+require 'models/string_key_object'
 
 class LockWithoutDefault < ActiveRecord::Base; end
 
@@ -17,12 +19,40 @@ class ReadonlyFirstNamePerson < Person
 end
 
 class OptimisticLockingTest < ActiveRecord::TestCase
-  fixtures :people, :legacy_things, :references
+  fixtures :people, :legacy_things, :references, :string_key_objects
 
-  # need to disable transactional fixtures, because otherwise the sqlite3
-  # adapter (at least) chokes when we try and change the schema in the middle
-  # of a test (see test_increment_counter_*).
-  self.use_transactional_fixtures = false
+  def test_non_integer_lock_existing
+    s1 = StringKeyObject.find("record1")
+    s2 = StringKeyObject.find("record1")
+    assert_equal 0, s1.lock_version
+    assert_equal 0, s2.lock_version
+
+    s1.name = 'updated record'
+    s1.save!
+    assert_equal 1, s1.lock_version
+    assert_equal 0, s2.lock_version
+
+    s2.name = 'doubly updated record'
+    assert_raise(ActiveRecord::StaleObjectError) { s2.save! }
+  end
+
+  def test_non_integer_lock_destroy
+    s1 = StringKeyObject.find("record1")
+    s2 = StringKeyObject.find("record1")
+    assert_equal 0, s1.lock_version
+    assert_equal 0, s2.lock_version
+
+    s1.name = 'updated record'
+    s1.save!
+    assert_equal 1, s1.lock_version
+    assert_equal 0, s2.lock_version
+    assert_raise(ActiveRecord::StaleObjectError) { s2.destroy }
+
+    assert s1.destroy
+    assert s1.frozen?
+    assert s1.destroyed?
+    assert_raises(ActiveRecord::RecordNotFound) { StringKeyObject.find("record1") }
+  end
 
   def test_lock_existing
     p1 = Person.find(1)
@@ -103,6 +133,14 @@ class OptimisticLockingTest < ActiveRecord::TestCase
     assert_equal 1, p1.lock_version
   end
 
+  def test_touch_existing_lock
+    p1 = Person.find(1)
+    assert_equal 0, p1.lock_version
+
+    p1.touch
+    assert_equal 1, p1.lock_version
+  end
+
 
   def test_lock_column_name_existing
     t1 = LegacyThing.find(1)
@@ -152,6 +190,33 @@ class OptimisticLockingTest < ActiveRecord::TestCase
     assert_equal "unchangeable name", p.first_name
   end
 
+  def test_quote_table_name
+    ref = references(:michael_magician)
+    ref.favourite = !ref.favourite
+    assert ref.save
+  end
+
+  # Useful for partial updates, don't only update the lock_version if there
+  # is nothing else being updated.
+  def test_update_without_attributes_does_not_only_update_lock_version
+    assert_nothing_raised do
+      p1 = Person.create!(:first_name => 'anika')
+      lock_version = p1.lock_version
+      p1.save
+      p1.reload
+      assert_equal lock_version, p1.lock_version
+    end
+  end
+end
+
+class OptimisticLockingWithSchemaChangeTest < ActiveRecord::TestCase
+  fixtures :people, :legacy_things, :references
+
+  # need to disable transactional fixtures, because otherwise the sqlite3
+  # adapter (at least) chokes when we try and change the schema in the middle
+  # of a test (see test_increment_counter_*).
+  self.use_transactional_fixtures = false
+
   { :lock_version => Person, :custom_lock_version => LegacyThing }.each do |name, model|
     define_method("test_increment_counter_updates_#{name}") do
       counter_test model, 1 do |id|
@@ -198,24 +263,6 @@ class OptimisticLockingTest < ActiveRecord::TestCase
     assert_raises(ActiveRecord::RecordNotFound) { LegacyThing.find(t.id) }
   end
 
-  def test_quote_table_name
-    ref = references(:michael_magician)
-    ref.favourite = !ref.favourite
-    assert ref.save
-  end
-
-  # Useful for partial updates, don't only update the lock_version if there
-  # is nothing else being updated.
-  def test_update_without_attributes_does_not_only_update_lock_version
-    assert_nothing_raised do
-      p1 = Person.create!(:first_name => 'anika')
-      lock_version = p1.lock_version
-      p1.save
-      p1.reload
-      assert_equal lock_version, p1.lock_version
-    end
-  end
-
   private
 
     def add_counter_column_to(model, col='test_count')
@@ -252,12 +299,13 @@ end
 
 # TODO: The Sybase, and OpenBase adapters currently have no support for pessimistic locking
 
-unless current_adapter?(:SybaseAdapter, :OpenBaseAdapter)
+unless current_adapter?(:SybaseAdapter, :OpenBaseAdapter) || in_memory_db?
   class PessimisticLockingTest < ActiveRecord::TestCase
     self.use_transactional_fixtures = false
     fixtures :people, :readers
 
     def setup
+      Person.connection_pool.clear_reloadable_connections!
       # Avoid introspection queries during tests.
       Person.columns; Reader.columns
     end
@@ -307,8 +355,6 @@ unless current_adapter?(:SybaseAdapter, :OpenBaseAdapter)
     end
 
     if current_adapter?(:PostgreSQLAdapter, :OracleAdapter)
-      use_concurrent_connections
-
       def test_no_locks_no_wait
         first, second = duel { Person.find 1 }
         assert first.end > second.end

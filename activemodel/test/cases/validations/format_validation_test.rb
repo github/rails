@@ -27,7 +27,7 @@ class PresenceValidationTest < ActiveModel::TestCase
   end
 
   def test_validate_format_with_allow_blank
-    Topic.validates_format_of(:title, :with => /^Validation\smacros \w+!$/, :allow_blank=>true)
+    Topic.validates_format_of(:title, :with => /^Validation\smacros \w+!$/, :allow_blank => true)
     assert Topic.new("title" => "Shouldn't be valid").invalid?
     assert Topic.new("title" => "").valid?
     assert Topic.new("title" => nil).valid?
@@ -96,6 +96,30 @@ class PresenceValidationTest < ActiveModel::TestCase
 
   def test_validates_format_of_when_not_isnt_a_regexp_should_raise_error
     assert_raise(ArgumentError) { Topic.validates_format_of(:title, :without => "clearly not a regexp") }
+  end
+
+  def test_validates_format_of_with_lambda
+    Topic.validates_format_of :content, :with => lambda{ |topic| topic.title == "digit" ? /\A\d+\Z/ : /\A\S+\Z/ }
+
+    t = Topic.new
+    t.title = "digit"
+    t.content = "Pixies"
+    assert t.invalid?
+
+    t.content = "1234"
+    assert t.valid?
+  end
+
+  def test_validates_format_of_without_lambda
+    Topic.validates_format_of :content, :without => lambda{ |topic| topic.title == "characters" ? /\A\d+\Z/ : /\A\S+\Z/ }
+
+    t = Topic.new
+    t.title = "characters"
+    t.content = "1234"
+    assert t.invalid?
+
+    t.content = "Pixies"
+    assert t.valid?
   end
 
   def test_validates_format_of_for_ruby_class

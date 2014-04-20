@@ -27,11 +27,33 @@ class ErrorsTest < ActiveModel::TestCase
     end
   end
 
+  def test_delete
+    errors = ActiveModel::Errors.new(self)
+    errors[:foo] = 'omg'
+    errors.delete(:foo)
+    assert errors[:foo].empty?
+  end
+
+  def test_include?
+    errors = ActiveModel::Errors.new(self)
+    errors[:foo] = 'omg'
+    assert errors.include?(:foo), 'errors should include :foo'
+  end
+
+  def test_dup
+    errors = ActiveModel::Errors.new(self)
+    errors[:foo] = 'bar'
+    errors_dup = errors.dup
+    errors_dup[:bar] = 'omg'
+    assert_not_same errors_dup.messages, errors.messages
+  end
+
   test "should return true if no errors" do
     person = Person.new
     person.errors[:foo]
     assert person.errors.empty?
     assert person.errors.blank?
+    assert !person.errors.include?(:foo)
   end
 
   test "method validate! should work" do

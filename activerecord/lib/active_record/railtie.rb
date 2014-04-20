@@ -13,8 +13,8 @@ module ActiveRecord
   class Railtie < Rails::Railtie
     config.active_record = ActiveSupport::OrderedOptions.new
 
-    config.generators.orm :active_record, :migration => true,
-                                          :timestamps => true
+    config.app_generators.orm :active_record, :migration => true,
+                                              :timestamps => true
 
     config.app_middleware.insert_after "::ActionDispatch::Callbacks",
       "ActiveRecord::QueryCache"
@@ -26,10 +26,12 @@ module ActiveRecord
       load "active_record/railties/databases.rake"
     end
 
-    # When loading console, force ActiveRecord to be loaded to avoid cross
-    # references when loading a constant for the first time.
-    console do
-      ActiveRecord::Base
+    # When loading console, force ActiveRecord::Base to be loaded
+    # to avoid cross references when loading a constant for the
+    # first time. Also, make it output to STDERR.
+    console do |app|
+      require "active_record/railties/console_sandbox" if app.sandbox?
+      ActiveRecord::Base.logger = Logger.new(STDERR)
     end
 
     initializer "active_record.initialize_timezone" do
@@ -43,8 +45,16 @@ module ActiveRecord
       ActiveSupport.on_load(:active_record) { self.logger ||= ::Rails.logger }
     end
 
+    initializer "active_record.identity_map" do |app|
+      config.app_middleware.insert_after "::ActionDispatch::Callbacks",
+        "ActiveRecord::IdentityMap::Middleware" if config.active_record.delete(:identity_map)
+    end
+
     initializer "active_record.set_configs" do |app|
       ActiveSupport.on_load(:active_record) do
+        if app.config.active_record.delete(:whitelist_attributes)
+          attr_accessible(nil)
+        end
         app.config.active_record.each do |k,v|
           send "#{k}=", v
         end
@@ -69,11 +79,10 @@ module ActiveRecord
     end
 
     initializer "active_record.set_dispatch_hooks", :before => :set_clear_dependencies_hook do |app|
-      unless app.config.cache_classes
-        ActiveSupport.on_load(:active_record) do
-          ActionDispatch::Callbacks.after do
-            ActiveRecord::Base.clear_reloadable_connections!
-          end
+      ActiveSupport.on_load(:active_record) do
+        ActionDispatch::Callbacks.after do
+          ActiveRecord::Base.clear_reloadable_connections!
+          ActiveRecord::Base.clear_cache!
         end
       end
     end
@@ -82,10 +91,33 @@ module ActiveRecord
       ActiveSupport.on_load(:active_record) do
         instantiate_observers
 
-        ActionDispatch::Callbacks.to_prepare(:activerecord_instantiate_observers) do
+        ActionDispatch::Callbacks.to_prepare do
           ActiveRecord::Base.instantiate_observers
         end
       end
     end
+
+    config.after_initialize do
+      container  = :"activerecord.attributes"
+      lookup = I18n.t(container, :default => {})
+      if lookup.is_a?(Hash)
+        lookup.each do |key, value|
+          if value.is_a?(Hash) && value.any? { |k,v| v.is_a?(Hash) }
+            $stderr.puts "[DEPRECATION WARNING] Nested I18n namespace lookup under \"#{container}.#{key}\" is no longer supported"
+          end
+        end
+      end
+
+      container  = :"activerecord.models"
+      lookup = I18n.t(container, :default => {})
+      if lookup.is_a?(Hash)
+        lookup.each do |key, value|
+          if value.is_a?(Hash) && !value.key?(:one)
+            $stderr.puts "[DEPRECATION WARNING] Nested I18n namespace lookup under \"#{container}.#{key}\" is no longer supported"
+          end
+        end
+      end
+    end
+
   end
 end

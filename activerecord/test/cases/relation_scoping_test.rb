@@ -11,6 +11,26 @@ require 'models/reference'
 class RelationScopingTest < ActiveRecord::TestCase
   fixtures :authors, :developers, :projects, :comments, :posts, :developers_projects
 
+  def test_reverse_order
+    assert_equal Developer.order("id DESC").to_a.reverse, Developer.order("id DESC").reverse_order
+  end
+
+  def test_reverse_order_with_arel_node
+    assert_equal Developer.order("id DESC").to_a.reverse, Developer.order(Developer.arel_table[:id].desc).reverse_order
+  end
+
+  def test_reverse_order_with_multiple_arel_nodes
+    assert_equal Developer.order("id DESC").order("name DESC").to_a.reverse, Developer.order(Developer.arel_table[:id].desc).order(Developer.arel_table[:name].desc).reverse_order
+  end
+
+  def test_reverse_order_with_arel_nodes_and_strings
+    assert_equal Developer.order("id DESC").order("name DESC").to_a.reverse, Developer.order("id DESC").order(Developer.arel_table[:name].desc).reverse_order
+  end
+
+  def test_double_reverse_order_produces_original_order
+    assert_equal Developer.order("name DESC"), Developer.order("name DESC").reverse_order.reverse_order
+  end
+
   def test_scoped_find
     Developer.where("name = 'David'").scoping do
       assert_nothing_raised { Developer.find(1) }
@@ -85,10 +105,8 @@ class RelationScopingTest < ActiveRecord::TestCase
 
   def test_scoped_find_include
     # with the include, will retrieve only developers for the given project
-    scoped_developers = ActiveSupport::Deprecation.silence do
-      Developer.includes(:projects).scoping do
-        Developer.where('projects.id = 2').all
-      end
+    scoped_developers = Developer.includes(:projects).scoping do
+      Developer.where('projects.id = 2').all
     end
     assert scoped_developers.include?(developers(:david))
     assert !scoped_developers.include?(developers(:jamis))
@@ -134,8 +152,6 @@ class RelationScopingTest < ActiveRecord::TestCase
   end
 
   def test_ensure_that_method_scoping_is_correctly_restored
-    scoped_methods = Developer.send(:current_scoped_methods)
-
     begin
       Developer.where("name = 'Jamis'").scoping do
         raise "an exception"
@@ -143,7 +159,7 @@ class RelationScopingTest < ActiveRecord::TestCase
     rescue
     end
 
-    assert_equal scoped_methods, Developer.send(:current_scoped_methods)
+    assert !Developer.scoped.where_values.include?("name = 'Jamis'")
   end
 end
 
@@ -154,7 +170,7 @@ class NestedRelationScopingTest < ActiveRecord::TestCase
     Developer.where('salary = 80000').scoping do
       Developer.limit(10).scoping do
         devs = Developer.scoped
-        assert_equal '(salary = 80000)', devs.arel.send(:where_clauses).join(' AND ')
+        assert_match '(salary = 80000)', devs.to_sql
         assert_equal 10, devs.taken
       end
     end
@@ -256,13 +272,18 @@ class HasManyScopingTest< ActiveRecord::TestCase
   end
 
   def test_should_maintain_default_scope_on_associations
-    person = people(:michael)
     magician = BadReference.find(1)
     assert_equal [magician], people(:michael).bad_references
   end
 
   def test_should_default_scope_on_associations_is_overriden_by_association_conditions
-    person = people(:michael)
+    reference = references(:michael_unicyclist).becomes(BadReference)
+
+    # This test relied on some completely broken and incorrect behaviour in
+    # ActiveRecord that we've fixed.
+    #
+    # assert_equal [reference], people(:michael).fixed_bad_references
+
     assert_equal [], people(:michael).fixed_bad_references
   end
 
@@ -313,6 +334,30 @@ class DefaultScopingTest < ActiveRecord::TestCase
     assert_equal expected, received
   end
 
+  def test_default_scope_as_class_method
+    assert_equal [developers(:david).becomes(ClassMethodDeveloperCalledDavid)], ClassMethodDeveloperCalledDavid.all
+  end
+
+  def test_default_scope_as_class_method_referencing_scope
+    assert_equal [developers(:david).becomes(ClassMethodReferencingScopeDeveloperCalledDavid)], ClassMethodReferencingScopeDeveloperCalledDavid.all
+  end
+
+  def test_default_scope_as_block_referencing_scope
+    assert_equal [developers(:david).becomes(LazyBlockReferencingScopeDeveloperCalledDavid)], LazyBlockReferencingScopeDeveloperCalledDavid.all
+  end
+
+  def test_default_scope_with_lambda
+    assert_equal [developers(:david).becomes(LazyLambdaDeveloperCalledDavid)], LazyLambdaDeveloperCalledDavid.all
+  end
+
+  def test_default_scope_with_block
+    assert_equal [developers(:david).becomes(LazyBlockDeveloperCalledDavid)], LazyBlockDeveloperCalledDavid.all
+  end
+
+  def test_default_scope_with_callable
+    assert_equal [developers(:david).becomes(CallableDeveloperCalledDavid)], CallableDeveloperCalledDavid.all
+  end
+
   def test_default_scope_is_unscoped_on_find
     assert_equal 1, DeveloperCalledDavid.count
     assert_equal 11, DeveloperCalledDavid.unscoped.count
@@ -334,53 +379,26 @@ class DefaultScopingTest < ActiveRecord::TestCase
 
   def test_default_scoping_with_threads
     2.times do
-      Thread.new { assert_equal ['salary DESC'], DeveloperOrderedBySalary.scoped.order_values }.join
+      Thread.new { assert DeveloperOrderedBySalary.scoped.to_sql.include?('salary DESC') }.join
     end
   end
 
-  def test_default_scoping_with_inheritance
-    # Inherit a class having a default scope and define a new default scope
-    klass = Class.new(DeveloperOrderedBySalary)
-    klass.send :default_scope, :limit => 1
-
-    # Scopes added on children should append to parent scope
-    assert_equal 1,               klass.scoped.limit_value
-    assert_equal ['salary DESC'], klass.scoped.order_values
-
-    # Parent should still have the original scope
-    assert_nil DeveloperOrderedBySalary.scoped.limit_value
-    assert_equal ['salary DESC'], DeveloperOrderedBySalary.scoped.order_values
+  def test_default_scope_with_inheritance
+    wheres = InheritedPoorDeveloperCalledJamis.scoped.where_values_hash
+    assert_equal "Jamis", wheres[:name]
+    assert_equal 50000,   wheres[:salary]
   end
 
-  def test_default_scope_called_twice_merges_conditions
-    ActiveSupport::Deprecation.silence { Developer.destroy_all }
-    Developer.create!(:name => "David", :salary => 80000)
-    Developer.create!(:name => "David", :salary => 100000)
-    Developer.create!(:name => "Brian", :salary => 100000)
-
-    klass = Class.new(Developer)
-    klass.__send__ :default_scope, :conditions => { :name => "David" }
-    klass.__send__ :default_scope, :conditions => { :salary => 100000 }
-    assert_equal 1,       klass.count
-    assert_equal "David", klass.first.name
-    assert_equal 100000,  klass.first.salary
+  def test_default_scope_with_module_includes
+    wheres = ModuleIncludedPoorDeveloperCalledJamis.scoped.where_values_hash
+    assert_equal "Jamis", wheres[:name]
+    assert_equal 50000,   wheres[:salary]
   end
 
-  def test_default_scope_called_twice_in_different_place_merges_where_clause
-    ActiveSupport::Deprecation.silence { Developer.destroy_all }
-    Developer.create!(:name => "David", :salary => 80000)
-    Developer.create!(:name => "David", :salary => 100000)
-    Developer.create!(:name => "Brian", :salary => 100000)
-
-    klass = Class.new(Developer)
-    klass.class_eval do
-      default_scope where("name = 'David'")
-      default_scope where("salary = 100000")
-    end
-
-    assert_equal 1,       klass.count
-    assert_equal "David", klass.first.name
-    assert_equal 100000,  klass.first.salary
+  def test_default_scope_with_multiple_calls
+    wheres = MultiplePoorDeveloperCalledJamis.scoped.where_values_hash
+    assert_equal "Jamis", wheres[:name]
+    assert_equal 50000,   wheres[:salary]
   end
 
   def test_method_scope
@@ -397,7 +415,7 @@ class DefaultScopingTest < ActiveRecord::TestCase
     assert_equal expected, received
   end
 
-  def test_named_scope_overwrites_default
+  def test_scope_overwrites_default
     expected = Developer.find(:all, :order => 'salary DESC, name DESC').collect { |dev| dev.name }
     received = DeveloperOrderedBySalary.by_name.find(:all).collect { |dev| dev.name }
     assert_equal expected, received
@@ -407,24 +425,6 @@ class DefaultScopingTest < ActiveRecord::TestCase
     expected = Developer.order('name DESC').collect { |dev| dev.name }
     received = DeveloperOrderedBySalary.reorder('name DESC').collect { |dev| dev.name }
     assert_equal expected, received
-  end
-
-  def test_except_and_order_overrides_default_scope_order
-    expected = Developer.order('name DESC').collect { |dev| dev.name }
-    received = DeveloperOrderedBySalary.except(:order).order('name DESC').collect { |dev| dev.name }
-    assert_equal expected, received
-  end
-
-  def test_except_and_order_overrides_default_scope_order
-    expected = Developer.order('name DESC').collect { |dev| dev.name }
-    received = DeveloperOrderedBySalary.except(:order).order('name DESC').collect { |dev| dev.name }
-    assert_equal expected, received
-  end
-
-  def test_reordered_scope_overrides_default_scope_order
-    not_expected = DeveloperOrderedBySalary.first # Jamis -> name DESC
-    received = DeveloperOrderedBySalary.reordered_by_name.first # David -> name
-    assert not_expected.id != received.id
   end
 
   def test_nested_exclusive_scope
@@ -441,12 +441,6 @@ class DefaultScopingTest < ActiveRecord::TestCase
     assert_equal expected, received
   end
 
-  def test_default_scope_using_relation
-    posts = PostWithComment.scoped
-    assert_equal 2, posts.count
-    assert_equal posts(:thinking), posts.first
-  end
-
   def test_create_attribute_overwrites_default_scoping
     assert_equal 'David', PoorDeveloperCalledJamis.create!(:name => 'David').name
     assert_equal 200000, PoorDeveloperCalledJamis.create!(:name => 'David', :salary => 200000).salary
@@ -457,9 +451,101 @@ class DefaultScopingTest < ActiveRecord::TestCase
     assert_equal 50000, PoorDeveloperCalledJamis.create!(:name => 'David').salary
   end
 
+  def test_default_scope_attribute
+    jamis = PoorDeveloperCalledJamis.new(:name => 'David')
+    assert_equal 50000, jamis.salary
+  end
+
+  def test_where_attribute
+    aaron = PoorDeveloperCalledJamis.where(:salary => 20).new(:name => 'Aaron')
+    assert_equal 20, aaron.salary
+    assert_equal 'Aaron', aaron.name
+  end
+
+  def test_where_attribute_merge
+    aaron = PoorDeveloperCalledJamis.where(:name => 'foo').new(:name => 'Aaron')
+    assert_equal 'Aaron', aaron.name
+  end
+
   def test_scope_composed_by_limit_and_then_offset_is_equal_to_scope_composed_by_offset_and_then_limit
     posts_limit_offset = Post.limit(3).offset(2)
     posts_offset_limit = Post.offset(2).limit(3)
     assert_equal posts_limit_offset, posts_offset_limit
+  end
+
+  def test_create_with_merge
+    aaron = PoorDeveloperCalledJamis.create_with(:name => 'foo', :salary => 20).merge(
+              PoorDeveloperCalledJamis.create_with(:name => 'Aaron')).new
+    assert_equal 20, aaron.salary
+    assert_equal 'Aaron', aaron.name
+
+    aaron = PoorDeveloperCalledJamis.create_with(:name => 'foo', :salary => 20).
+                                     create_with(:name => 'Aaron').new
+    assert_equal 20, aaron.salary
+    assert_equal 'Aaron', aaron.name
+  end
+
+  def test_create_with_reset
+    jamis = PoorDeveloperCalledJamis.create_with(:name => 'Aaron').create_with(nil).new
+    assert_equal 'Jamis', jamis.name
+  end
+
+  # FIXME: I don't know if this is *desired* behavior, but it is *today's*
+  # behavior.
+  def test_create_with_empty_hash_will_not_reset
+    jamis = PoorDeveloperCalledJamis.create_with(:name => 'Aaron').create_with({}).new
+    assert_equal 'Aaron', jamis.name
+  end
+
+  def test_unscoped_with_named_scope_should_not_have_default_scope
+    assert_equal [DeveloperCalledJamis.find(developers(:poor_jamis).id)], DeveloperCalledJamis.poor
+
+    assert DeveloperCalledJamis.unscoped.poor.include?(developers(:david).becomes(DeveloperCalledJamis))
+    assert_equal 10, DeveloperCalledJamis.unscoped.poor.length
+  end
+
+  def test_default_scope_select_ignored_by_aggregations
+    assert_equal DeveloperWithSelect.all.count, DeveloperWithSelect.count
+  end
+
+  def test_default_scope_select_ignored_by_grouped_aggregations
+    assert_equal Hash[Developer.all.group_by(&:salary).map { |s, d| [s, d.count] }],
+                 DeveloperWithSelect.group(:salary).count
+  end
+
+  def test_default_scope_order_ignored_by_aggregations
+    assert_equal DeveloperOrderedBySalary.all.count, DeveloperOrderedBySalary.count
+  end
+
+  def test_default_scope_find_last
+    assert DeveloperOrderedBySalary.count > 1, "need more than one row for test"
+
+    lowest_salary_dev = DeveloperOrderedBySalary.find(developers(:poor_jamis).id)
+    assert_equal lowest_salary_dev, DeveloperOrderedBySalary.last
+  end
+
+  def test_default_scope_include_with_count
+    d = DeveloperWithIncludes.create!
+    d.audit_logs.create! :message => 'foo'
+
+    assert_equal 1, DeveloperWithIncludes.where(:audit_logs => { :message => 'foo' }).count
+  end
+
+  def test_default_scope_is_threadsafe
+    if in_memory_db?
+      skip "in memory db can't share a db between threads"
+    end
+
+    threads = []
+    assert_not_equal 1, ThreadsafeDeveloper.unscoped.count
+
+    threads << Thread.new do
+      Thread.current[:long_default_scope] = true
+      assert_equal 1, ThreadsafeDeveloper.all.count
+    end
+    threads << Thread.new do
+      assert_equal 1, ThreadsafeDeveloper.all.count
+    end
+    threads.each(&:join)
   end
 end

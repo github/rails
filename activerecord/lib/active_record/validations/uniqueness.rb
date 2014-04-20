@@ -14,29 +14,23 @@ module ActiveRecord
 
       def validate_each(record, attribute, value)
         finder_class = find_finder_class_for(record)
-        table = finder_class.unscoped
+        table = finder_class.arel_table
 
-        table_name   = record.class.quoted_table_name
+        coder = record.class.serialized_attributes[attribute.to_s]
 
-        if value && record.class.serialized_attributes.key?(attribute.to_s)
-          value = YAML.dump value
+        if value && coder
+          value = coder.dump value
         end
 
-        sql, params  = mount_sql_and_params(finder_class, table_name, attribute, value)
-
-        relation = table.where(sql, *params)
+        relation = build_relation(finder_class, table, attribute, value)
+        relation = relation.and(table[finder_class.primary_key.to_sym].not_eq(record.send(:id))) if record.persisted?
 
         Array.wrap(options[:scope]).each do |scope_item|
           scope_value = record.send(scope_item)
-          relation = relation.where(scope_item => scope_value)
+          relation = relation.and(table[scope_item].eq(scope_value))
         end
 
-        unless record.new_record?
-          # TODO : This should be in Arel
-          relation = relation.where("#{record.class.quoted_table_name}.#{record.class.primary_key} <> ?", record.send(:id))
-        end
-
-        if relation.exists?
+        if finder_class.unscoped.where(relation).exists?
           record.errors.add(attribute, :taken, options.except(:case_sensitive, :scope).merge(:value => value))
         end
       end
@@ -58,27 +52,19 @@ module ActiveRecord
         class_hierarchy.detect { |klass| !klass.abstract_class? }
       end
 
-      def mount_sql_and_params(klass, table_name, attribute, value) #:nodoc:
+      def build_relation(klass, table, attribute, value) #:nodoc:
         column = klass.columns_hash[attribute.to_s]
+        value = column.limit ? value.to_s.mb_chars[0, column.limit] : value.to_s if column.text?
 
-        operator = if value.nil?
-          "IS ?"
-        elsif column.text?
-          value = column.limit ? value.to_s.mb_chars[0, column.limit] : value.to_s
-          "#{klass.connection.case_sensitive_equality_operator} ?"
+        if !options[:case_sensitive] && value && column.text?
+          # will use SQL LOWER function before comparison
+          relation = table[attribute].lower.eq(table.lower(value))
         else
-          "= ?"
+          value    = klass.connection.case_sensitive_modifier(value)
+          relation = table[attribute].eq(value)
         end
 
-        sql_attribute = "#{table_name}.#{klass.connection.quote_column_name(attribute)}"
-
-        if value.nil? || (options[:case_sensitive] || !column.text?)
-          sql = "#{sql_attribute} #{operator}"
-        else
-          sql = "LOWER(#{sql_attribute}) = LOWER(?)"
-        end
-
-        [sql, [value]]
+        relation
       end
     end
 
@@ -88,11 +74,16 @@ module ActiveRecord
       # can be named "davidhh".
       #
       #   class Person < ActiveRecord::Base
-      #     validates_uniqueness_of :user_name, :scope => :account_id
+      #     validates_uniqueness_of :user_name
       #   end
       #
-      # It can also validate whether the value of the specified attributes are unique based on multiple
-      # scope parameters.  For example, making sure that a teacher can only be on the schedule once
+      # It can also validate whether the value of the specified attributes are unique based on a scope parameter:
+      #
+      #   class Person < ActiveRecord::Base
+      #     validates_uniqueness_of :user_name, :scope => :account_id
+      #   end 
+      #
+      # Or even multiple scope parameters.  For example, making sure that a teacher can only be on the schedule once
       # per semester for a particular class.
       #
       #   class TeacherSchedule < ActiveRecord::Base
@@ -154,33 +145,32 @@ module ActiveRecord
       #                                      | # title!
       #
       # This could even happen if you use transactions with the 'serializable'
-      # isolation level. There are several ways to get around this problem:
+      # isolation level. The best way to work around this problem is to add a unique
+      # index to the database table using
+      # ActiveRecord::ConnectionAdapters::SchemaStatements#add_index. In the
+      # rare case that a race condition occurs, the database will guarantee
+      # the field's uniqueness.
       #
-      # - By locking the database table before validating, and unlocking it after
-      #   saving. However, table locking is very expensive, and thus not
-      #   recommended.
-      # - By locking a lock file before validating, and unlocking it after saving.
-      #   This does not work if you've scaled your Rails application across
-      #   multiple web servers (because they cannot share lock files, or cannot
-      #   do that efficiently), and thus not recommended.
-      # - Creating a unique index on the field, by using
-      #   ActiveRecord::ConnectionAdapters::SchemaStatements#add_index. In the
-      #   rare case that a race condition occurs, the database will guarantee
-      #   the field's uniqueness.
+      # When the database catches such a duplicate insertion,
+      # ActiveRecord::Base#save will raise an ActiveRecord::StatementInvalid
+      # exception. You can either choose to let this error propagate (which
+      # will result in the default Rails exception page being shown), or you
+      # can catch it and restart the transaction (e.g. by telling the user
+      # that the title already exists, and asking him to re-enter the title).
+      # This technique is also known as optimistic concurrency control:
+      # http://en.wikipedia.org/wiki/Optimistic_concurrency_control
       #
-      #   When the database catches such a duplicate insertion,
-      #   ActiveRecord::Base#save will raise an ActiveRecord::StatementInvalid
-      #   exception. You can either choose to let this error propagate (which
-      #   will result in the default Rails exception page being shown), or you
-      #   can catch it and restart the transaction (e.g. by telling the user
-      #   that the title already exists, and asking him to re-enter the title).
-      #   This technique is also known as optimistic concurrency control:
-      #   http://en.wikipedia.org/wiki/Optimistic_concurrency_control
-      #
-      #   Active Record currently provides no way to distinguish unique
-      #   index constraint errors from other types of database errors, so you
-      #   will have to parse the (database-specific) exception message to detect
-      #   such a case.
+      # The bundled ActiveRecord::ConnectionAdapters distinguish unique index
+      # constraint errors from other types of database errors by throwing an
+      # ActiveRecord::RecordNotUnique exception.
+      # For other adapters you will have to parse the (database-specific) exception
+      # message to detect such a case.
+      # The following bundled adapters throw the ActiveRecord::RecordNotUnique exception:
+      # * ActiveRecord::ConnectionAdapters::MysqlAdapter
+      # * ActiveRecord::ConnectionAdapters::Mysql2Adapter
+      # * ActiveRecord::ConnectionAdapters::SQLiteAdapter
+      # * ActiveRecord::ConnectionAdapters::SQLite3Adapter
+      # * ActiveRecord::ConnectionAdapters::PostgreSQLAdapter
       #
       def validates_uniqueness_of(*attr_names)
         validates_with UniquenessValidator, _merge_attributes(attr_names)

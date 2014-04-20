@@ -17,6 +17,10 @@ class FooObserver < ActiveModel::Observer
   def on_spec(record)
     stub.event_with(record) if stub
   end
+
+  def around_save(record)
+    yield :in_around_save
+  end
 end
 
 class Foo
@@ -41,6 +45,11 @@ class ObservingTest < ActiveModel::TestCase
     ObservedModel.observers = [[:foo], :bar]
     assert ObservedModel.observers.include?(:foo), ":foo not in #{ObservedModel.observers.inspect}"
     assert ObservedModel.observers.include?(:bar), ":bar not in #{ObservedModel.observers.inspect}"
+  end
+
+  test "uses an ObserverArray so observers can be disabled" do
+    ObservedModel.observers = [:foo, :bar]
+    assert ObservedModel.observers.is_a?(ActiveModel::ObserverArray)
   end
 
   test "instantiates observer names passed as strings" do
@@ -127,5 +136,13 @@ class ObserverTest < ActiveModel::TestCase
   test "skips nonexistent observer event" do
     foo = Foo.new
     Foo.send(:notify_observers, :whatever, foo)
+  end
+
+  test "update passes a block on to the observer" do
+    yielded_value = nil
+    FooObserver.instance.update(:around_save, Foo.new) do |val|
+      yielded_value = val
+    end
+    assert_equal :in_around_save, yielded_value
   end
 end

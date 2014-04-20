@@ -34,10 +34,8 @@ class ModulesTest < ActiveRecord::TestCase
 
   def test_module_spanning_has_and_belongs_to_many_associations
     project = MyApplication::Business::Project.find(:first)
-    ActiveSupport::Deprecation.silence do
-      project.developers << MyApplication::Business::Developer.create("name" => "John")
-      assert_equal "John", project.developers.last.name
-    end
+    project.developers << MyApplication::Business::Developer.create("name" => "John")
+    assert_equal "John", project.developers.last.name
   end
 
   def test_associations_spanning_cross_modules
@@ -51,7 +49,6 @@ class ModulesTest < ActiveRecord::TestCase
 
   def test_find_account_and_include_company
     account = MyApplication::Billing::Account.find(1, :include => :firm)
-    assert_kind_of MyApplication::Business::Firm, account.instance_variable_get('@firm')
     assert_kind_of MyApplication::Business::Firm, account.firm
   end
 

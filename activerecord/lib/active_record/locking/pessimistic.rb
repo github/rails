@@ -3,15 +3,14 @@ module ActiveRecord
     # Locking::Pessimistic provides support for row-level locking using
     # SELECT ... FOR UPDATE and other lock types.
     #
-    # Pass <tt>:lock => true</tt> to ActiveRecord::Base.find to obtain an exclusive
+    # Pass <tt>:lock => true</tt> to <tt>ActiveRecord::Base.find</tt> to obtain an exclusive
     # lock on the selected rows:
     #   # select * from accounts where id=1 for update
     #   Account.find(1, :lock => true)
     #
     # Pass <tt>:lock => 'some locking clause'</tt> to give a database-specific locking clause
-    # of your own such as 'LOCK IN SHARE MODE' or 'FOR UPDATE NOWAIT'.
+    # of your own such as 'LOCK IN SHARE MODE' or 'FOR UPDATE NOWAIT'. Example:
     #
-    # Example:
     #   Account.transaction do
     #     # select * from accounts where name = 'shugo' limit 1 for update
     #     shugo = Account.where("name = 'shugo'").lock(true).first
@@ -22,8 +21,9 @@ module ActiveRecord
     #     yuko.save!
     #   end
     #
-    # You can also use ActiveRecord::Base#lock! method to lock one record by id.
+    # You can also use <tt>ActiveRecord::Base#lock!</tt> method to lock one record by id.
     # This may be better if you don't need to lock every row. Example:
+    #
     #   Account.transaction do
     #     # select * from accounts where ...
     #     accounts = Account.where(...).all
@@ -44,10 +44,10 @@ module ActiveRecord
     module Pessimistic
       # Obtain a row lock on this record. Reloads the record to obtain the requested
       # lock. Pass an SQL locking clause to append the end of the SELECT statement
-      # or pass true for "FOR UPDATE" (the default, an exclusive row lock).  Returns
+      # or pass true for "FOR UPDATE" (the default, an exclusive row lock). Returns
       # the locked record.
       def lock!(lock = true)
-        reload(:lock => lock) unless new_record?
+        reload(:lock => lock) if persisted?
         self
       end
     end

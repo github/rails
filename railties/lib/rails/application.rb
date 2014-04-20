@@ -187,6 +187,8 @@ module Rails
   protected
 
     def default_middleware_stack
+      require 'action_controller/railtie'
+
       ActionDispatch::MiddlewareStack.new.tap do |middleware|
         middleware.use ::ActionDispatch::Static, paths.public.to_a.first if config.serve_static_assets
         middleware.use ::Rack::Lock if !config.allow_concurrency
