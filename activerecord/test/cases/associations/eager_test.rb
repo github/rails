@@ -981,10 +981,16 @@ class EagerAssociationTest < ActiveRecord::TestCase
     LazyReader.create! :person => people(:susan), :post => post
 
     assert_equal 1, post.lazy_readers.to_a.size
-    assert_equal 2, post.lazy_readers_skimmers_or_not.to_a.size
+
+    # This test relied on some completely broken and incorrect behaviour in
+    # ActiveRecord that we've fixed.
+    #
+    # assert_equal 2, post.lazy_readers_skimmers_or_not.to_a.size
+
+    assert_equal 1, post.lazy_readers_skimmers_or_not.to_a.size
 
     post_with_readers = Post.includes(:lazy_readers_skimmers_or_not).find(post.id)
-    assert_equal 2, post_with_readers.lazy_readers_skimmers_or_not.to_a.size
+    assert_equal 1, post_with_readers.lazy_readers_skimmers_or_not.to_a.size
   end
 
   def test_include_has_many_using_primary_key
