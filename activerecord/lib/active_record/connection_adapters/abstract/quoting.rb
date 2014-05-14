@@ -61,6 +61,17 @@ module ActiveRecord
       end
 
       def quoted_date(value)
+        if value.is_a?(DateTime)
+          # hackily convert this DateTime to a Time so we can properly call
+          # `getlocal` on it to convert it to localtime.
+          #
+          # DateTime has a getutc method, but not a getlocal method, so the
+          # code below will just not even convert it before calling `to_s(:db)`
+          # unless we intervene.
+          #
+          value = Time.parse(value.to_s)
+        end
+
         if value.acts_like?(:time)
           zone_conversion_method = ActiveRecord::Base.default_timezone == :utc ? :getutc : :getlocal
           value.respond_to?(zone_conversion_method) ? value.send(zone_conversion_method) : value
