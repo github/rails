@@ -248,6 +248,7 @@ module ActionMailer #:nodoc:
   #     This is a symbol and one of <tt>:plain</tt>, <tt>:login</tt>, <tt>:cram_md5</tt>.
   #   * <tt>:enable_starttls_auto</tt> - When set to true, detects if STARTTLS is enabled in your SMTP server and starts to use it.
   #     It works only on Ruby >= 1.8.7 and Ruby >= 1.9. Default is true.
+  #   * <tt>:enable_tls</tt> - When set to true, enables SMTP directly over SSL/TLS. Default is false.
   #
   # * <tt>sendmail_settings</tt> - Allows you to override options for the <tt>:sendmail</tt> delivery method.
   #   * <tt>:location</tt> - The location of the sendmail executable. Defaults to <tt>/usr/sbin/sendmail</tt>.
@@ -299,6 +300,7 @@ module ActionMailer #:nodoc:
       :password             => nil,
       :authentication       => nil,
       :enable_starttls_auto => true,
+      :enable_tls           => false,
     }
     cattr_accessor :smtp_settings
 
@@ -712,6 +714,7 @@ module ActionMailer #:nodoc:
 
         smtp = Net::SMTP.new(smtp_settings[:address], smtp_settings[:port])
         smtp.enable_starttls_auto if smtp_settings[:enable_starttls_auto] && smtp.respond_to?(:enable_starttls_auto)
+        smtp.enable_tls if smtp_settings[:enable_tls] && smtp.respond_to?(:enable_tls)
         smtp.start(smtp_settings[:domain], smtp_settings[:user_name], smtp_settings[:password],
                    smtp_settings[:authentication]) do |smtp|
           smtp.sendmail(mail.encoded, sender, destinations)
