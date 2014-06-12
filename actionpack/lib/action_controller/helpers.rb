@@ -77,6 +77,7 @@ module ActionController #:nodoc:
 
         @master_helper_class = Class.new(ActionView::Base).tap do |klass|
           klass.send(:include, master_helper_module)
+          klass.send(:include, ActionController::Routing::Routes.url_helpers)
         end
       end
 

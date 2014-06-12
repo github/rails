@@ -9,6 +9,4 @@ class Hash #:nodoc:
   include ActiveSupport::CoreExtensions::Hash::ReverseMerge
   include ActiveSupport::CoreExtensions::Hash::Conversions
   include ActiveSupport::CoreExtensions::Hash::Diff
-  include ActiveSupport::CoreExtensions::Hash::Slice
-  include ActiveSupport::CoreExtensions::Hash::Except
 end

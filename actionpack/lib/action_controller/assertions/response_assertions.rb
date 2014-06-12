@@ -59,19 +59,9 @@ module ActionController
       def assert_redirected_to(options = {}, message=nil)
         clean_backtrace do
           assert_response(:redirect, message)
-          return true if options == @response.redirected_to
+          return true if options == @response.location
 
-          # Support partial arguments for hash redirections
-          if options.is_a?(Hash) && @response.redirected_to.is_a?(Hash)
-            if options.all? {|(key, value)| @response.redirected_to[key] == value}
-              callstack = caller.dup
-              callstack.slice!(0, 2)
-              ::ActiveSupport::Deprecation.warn("Using assert_redirected_to with partial hash arguments is deprecated. Specify the full set arguments instead", callstack)
-              return true
-            end
-          end
-
-          redirected_to_after_normalisation = normalize_argument_to_redirection(@response.redirected_to)
+          redirected_to_after_normalisation = normalize_argument_to_redirection(@response.location)
           options_after_normalisation       = normalize_argument_to_redirection(options)
 
           if redirected_to_after_normalisation != options_after_normalisation

@@ -44,7 +44,7 @@ module ActionController
         # Run prepare callbacks before every request in development mode
         run_prepare_callbacks
 
-        Routing::Routes.reload
+        ActionController::Routing.routes_reloader.execute_if_updated
       end
 
       def cleanup_application

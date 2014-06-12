@@ -36,17 +36,13 @@ module ActionController #:nodoc:
       @env['RAW_POST_DATA'] ||= begin
         data = url_encoded_request_parameters
         data.force_encoding(Encoding::BINARY) if data.respond_to?(:force_encoding)
+        @env['CONTENT_LENGTH'] = data.bytesize.to_s
         data
       end
     end
 
     def port=(number)
       @env["SERVER_PORT"] = number.to_i
-    end
-
-    def action=(action_name)
-      @query_parameters.update({ "action" => action_name })
-      @parameters = nil
     end
 
     # Used to check AbstractRequest's request_uri functionality.
@@ -91,23 +87,32 @@ module ActionController #:nodoc:
       @path || super()
     end
 
-    def assign_parameters(controller_path, action, parameters = {})
+    def assign_parameters(routes, controller_path, action, parameters = {})
       parameters = parameters.symbolize_keys.merge(:controller => controller_path, :action => action)
-      extra_keys = ActionController::Routing::Routes.extra_keys(parameters)
+      extra_keys = routes.extra_keys(parameters)
       non_path_parameters = get? ? query_parameters : request_parameters
       parameters.each do |key, value|
-        if value.is_a? Fixnum
-          value = value.to_s
-        elsif value.is_a? Array
-          value = ActionController::Routing::PathSegment::Result.new(value)
+        if value.is_a?(Array) && (value.frozen? || value.any?(&:frozen?))
+          value = value.map{ |v| v.duplicable? ? v.dup : v }
+        elsif value.is_a?(Hash) && (value.frozen? || value.any?{ |k,v| v.frozen? })
+          value = Hash[value.map{ |k,v| [k, v.duplicable? ? v.dup : v] }]
+        elsif value.frozen? && value.duplicable?
+          value = value.dup
         end
 
         if extra_keys.include?(key.to_sym)
           non_path_parameters[key] = value
         else
+          if value.is_a?(Array)
+            value = value.map(&:to_param)
+          else
+            value = value.to_param
+          end
+
           path_parameters[key.to_s] = value
         end
       end
+
       raw_post # populate env['RAW_POST_DATA']
       @parameters = nil # reset TestRequest#parameters to use the new path_parameters
     end
@@ -420,9 +425,11 @@ module ActionController #:nodoc:
     end
 
     def process(action, parameters = nil, session = nil, flash = nil, http_method = 'GET')
+      @routes ||= ActionController::Routing::Routes
+
       # Sanity check for required instance variables so we can give an
       # understandable error message.
-      %w(@controller @request @response).each do |iv_name|
+      %w(@routes @controller @request @response).each do |iv_name|
         if !(instance_variable_names.include?(iv_name) || instance_variable_names.include?(iv_name.to_sym)) || instance_variable_get(iv_name).nil?
           raise "#{iv_name} is nil: make sure you set it in your test's setup method."
         end
@@ -434,10 +441,8 @@ module ActionController #:nodoc:
       @html_document = nil
       @request.env['REQUEST_METHOD'] = http_method
 
-      @request.action = action.to_s
-
       parameters ||= {}
-      @request.assign_parameters(@controller.class.controller_path, action.to_s, parameters)
+      @request.assign_parameters(@routes, @controller.class.controller_path, action.to_s, parameters)
 
       @request.session = ActionController::TestSession.new(session) unless session.nil?
       @request.session["flash"] = ActionController::Flash::FlashHash.new.update(flash) if flash
@@ -482,13 +487,20 @@ module ActionController #:nodoc:
     end
 
     def build_request_uri(action, parameters)
-      unless @request.env['REQUEST_URI']
-        options = @controller.__send__(:rewrite_options, parameters)
-        options.update(:only_path => true, :action => action)
+      @controller.request = @request
+      options = @controller.respond_to?(:url_options) ? @controller.__send__(:url_options).merge(parameters) : parameters
+      options.update(
+        :only_path => true,
+        :action => action,
+        :relative_url_root => nil,
+        :_recall => @request.symbolized_path_parameters)
 
-        url = ActionController::UrlRewriter.new(@request, parameters)
-        @request.set_REQUEST_URI(url.rewrite(options))
-      end
+      url, query_string = @routes.url_for(options).split("?", 2)
+
+      @request.env["PATH_INFO"] = url
+      @request.env["QUERY_STRING"] = (@request.get? && query_string) || ""
+      @request.set_REQUEST_URI(nil)
+      @request.request_uri # populate REQUEST_URI
     end
 
     def html_document

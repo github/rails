@@ -531,9 +531,9 @@ Run `rake gems:install` to install the missing gems.
     def initialize_routing
       return unless configuration.frameworks.include?(:action_controller)
 
-      ActionController::Routing.controller_paths += configuration.controller_paths
-      ActionController::Routing::Routes.add_configuration_file(configuration.routes_configuration_file)
-      ActionController::Routing::Routes.reload!
+      route = configuration.routes_configuration_file
+      ActionController::Routing.routes_reloader.paths.unshift(route) if File.exists?(route)
+      ActionController::Routing.reload_routes!
     end
 
     # Sets the dependency loading mechanism based on the value of

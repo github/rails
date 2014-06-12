@@ -1,4 +1,5 @@
 require 'thread'
+require 'set'
 
 module ActiveSupport #:nodoc:
   module Dependencies #:nodoc:

@@ -280,7 +280,6 @@ module ActionMailer #:nodoc:
   class Base
     include AdvAttrAccessor, PartContainer, Quoting, Utils
     if Object.const_defined?(:ActionController)
-      include ActionController::UrlWriter
       include ActionController::Layout
     end
 

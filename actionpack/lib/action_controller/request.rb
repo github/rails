@@ -35,6 +35,10 @@ module ActionController
       @request_method ||= HTTP_METHOD_LOOKUP[super] || raise(UnknownHttpMethod, "#{super}, accepted HTTP methods are #{HTTP_METHODS.to_sentence(:locale => :en)}")
     end
 
+    def request_method_string
+      @request_method_string ||= @env['REQUEST_METHOD']
+    end
+
     # Returns the HTTP request \method used for action processing as a
     # lowercase symbol, such as <tt>:post</tt>. (Unlike #request_method, this
     # method returns <tt>:get</tt> for a HEAD request because the two are
@@ -308,6 +312,10 @@ EOM
       end
     end
 
+    def standard_port?
+      port == standard_port
+    end
+
     # Returns a \port suffix like ":8080" if the \port number of this request
     # is not the default HTTP \port 80 or HTTPS \port 443.
     def port_string
@@ -330,6 +338,10 @@ EOM
       return [] unless named_host?(host)
       parts = host.split('.')
       parts[0..-(tld_length+2)]
+    end
+
+    def subdomain(tld_length = 1)
+      subdomains(tld_length).join('.')
     end
 
     # Returns the query string, accounting for server idiosyncrasies.

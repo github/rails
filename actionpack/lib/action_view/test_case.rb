@@ -41,7 +41,6 @@ module ActionView
     include ActionController::TestCase::Assertions
     include ActionController::TestProcess
 
-    include ActionController::PolymorphicRoutes
     include ActionController::RecordIdentifier
 
     include ActionView::Helpers

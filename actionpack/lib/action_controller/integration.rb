@@ -1,7 +1,6 @@
 require 'stringio'
 require 'uri'
 require 'active_support/test_case'
-require 'action_controller/rack_lint_patch'
 
 module ActionController
   module Integration #:nodoc:
@@ -91,12 +90,9 @@ module ActionController
 
         unless defined? @named_routes_configured
           # install the named routes in this session instance.
-          klass = class << self; self; end
-          Routing::Routes.install_helpers(klass)
-
-          # the helpers are made protected by default--we make them public for
-          # easier access during testing and troubleshooting.
-          klass.module_eval { public *Routing::Routes.named_routes.helpers }
+          class << self
+            include ActionController::Routing::Routes.url_helpers
+          end
           @named_routes_configured = true
         end
       end
@@ -130,7 +126,7 @@ module ActionController
       # performed on the location header.
       def follow_redirect!
         raise "not a redirect! #{@status} #{@status_message}" unless redirect?
-        get(interpret_uri(headers['location']))
+        get(headers['location'])
         status
       end
 
@@ -256,14 +252,15 @@ module ActionController
 
         # Performs the actual request.
         def process(method, path, parameters = nil, headers = nil)
-          data = requestify(parameters)
+          data = requestify(parameters) if !parameters.blank?
           path = interpret_uri(path) if path =~ %r{://}
           path = "/#{path}" unless path[0] == ?/
+          path, query = path.split('?', 2)
           @path = path
           env = {}
 
           if method == :get
-            env["QUERY_STRING"] = data
+            env["QUERY_STRING"] = query || data
             data = nil
           end
 
@@ -343,6 +340,10 @@ module ActionController
             @response = @controller.response
             @controller.send(:set_test_assigns)
           else
+            # Fake request for integration tests that never hit a controller ('/' => redirect('/abc'))
+            @request = ActionController::TestRequest.new
+            @request.host = host
+
             # Decorate responses from Rack Middleware and Rails Metal
             # as an Response for the purposes of integration testing
             @response = Response.new

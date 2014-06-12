@@ -1,61 +1,15 @@
 require 'set'
+require 'action_controller/metal/url_for'
+require 'action_controller/metal/exceptions'
 
 module ActionController #:nodoc:
-  class ActionControllerError < StandardError #:nodoc:
-  end
-
-  class SessionRestoreError < ActionControllerError #:nodoc:
-  end
-
-  class RenderError < ActionControllerError #:nodoc:
-  end
-
-  class RoutingError < ActionControllerError #:nodoc:
-    attr_reader :failures
-    def initialize(message, failures=[])
-      super(message)
-      @failures = failures
-    end
-  end
-
-  class MethodNotAllowed < ActionControllerError #:nodoc:
-    attr_reader :allowed_methods
-
-    def initialize(*allowed_methods)
-      super("Only #{allowed_methods.to_sentence(:locale => :en)} requests are allowed.")
-      @allowed_methods = allowed_methods
-    end
-
-    def allowed_methods_header
-      allowed_methods.map { |method_symbol| method_symbol.to_s.upcase } * ', '
-    end
-
-    def handle_response!(response)
-      response.headers['Allow'] ||= allowed_methods_header
-    end
-  end
-
-  class NotImplemented < MethodNotAllowed #:nodoc:
-  end
-
-  class UnknownController < ActionControllerError #:nodoc:
-  end
-
   class UnknownAction < ActionControllerError #:nodoc:
   end
 
-  class MissingFile < ActionControllerError #:nodoc:
-  end
-
   class RenderError < ActionControllerError #:nodoc:
   end
 
-  class SessionOverflowError < ActionControllerError #:nodoc:
-    DEFAULT_MESSAGE = 'Your session data is larger than the data column in which it is to be stored. You must increase the size of your data column if you intend to store large data.'
-
-    def initialize(message = nil)
-      super(message || DEFAULT_MESSAGE)
-    end
+  class SessionRestoreError < ActionControllerError #:nodoc:
   end
 
   class DoubleRenderError < ActionControllerError #:nodoc:
@@ -72,9 +26,6 @@ module ActionController #:nodoc:
     def initialize(message = nil)
       super(message || DEFAULT_MESSAGE)
     end
-  end
-
-  class UnknownHttpMethod < ActionControllerError #:nodoc:
   end
 
   # Action Controllers are the core of a web request in Rails. They are made up of one or more actions that are executed
@@ -250,6 +201,7 @@ module ActionController #:nodoc:
     DEFAULT_RENDER_STATUS_CODE = "200 OK"
 
     include StatusCodes
+    include UrlFor
 
     cattr_reader :protected_instance_variables
     # Controller specific instance variables which will not be accessible inside views.
@@ -539,93 +491,6 @@ module ActionController #:nodoc:
       def send_response
         response.prepare!
         response
-      end
-
-      # Returns a URL that has been rewritten according to the options hash and the defined routes.
-      # (For doing a complete redirect, use +redirect_to+).
-      #
-      # <tt>url_for</tt> is used to:
-      #
-      # All keys given to +url_for+ are forwarded to the Route module, save for the following:
-      # * <tt>:anchor</tt> - Specifies the anchor name to be appended to the path. For example,
-      #   <tt>url_for :controller => 'posts', :action => 'show', :id => 10, :anchor => 'comments'</tt>
-      #   will produce "/posts/show/10#comments".
-      # * <tt>:only_path</tt> - If true, returns the relative URL (omitting the protocol, host name, and port) (<tt>false</tt> by default).
-      # * <tt>:trailing_slash</tt> - If true, adds a trailing slash, as in "/archive/2005/". Note that this
-      #   is currently not recommended since it breaks caching.
-      # * <tt>:host</tt> - Overrides the default (current) host if provided.
-      # * <tt>:protocol</tt> - Overrides the default (current) protocol if provided.
-      # * <tt>:port</tt> - Optionally specify the port to connect to.
-      # * <tt>:user</tt> - Inline HTTP authentication (only plucked out if <tt>:password</tt> is also present).
-      # * <tt>:password</tt> - Inline HTTP authentication (only plucked out if <tt>:user</tt> is also present).
-      # * <tt>:skip_relative_url_root</tt> - If true, the url is not constructed using the +relative_url_root+
-      #   of the request so the path will include the web server relative installation directory.
-      #
-      # The URL is generated from the remaining keys in the hash. A URL contains two key parts: the <base> and a query string.
-      # Routes composes a query string as the key/value pairs not included in the <base>.
-      #
-      # The default Routes setup supports a typical Rails path of "controller/action/id" where action and id are optional, with
-      # action defaulting to 'index' when not given. Here are some typical url_for statements and their corresponding URLs:
-      #
-      #   url_for :controller => 'posts', :action => 'recent'                # => 'proto://host.com/posts/recent'
-      #   url_for :controller => 'posts', :action => 'index'                 # => 'proto://host.com/posts'
-      #   url_for :controller => 'posts', :action => 'index', :port=>'8033'  # => 'proto://host.com:8033/posts'
-      #   url_for :controller => 'posts', :action => 'show', :id => 10       # => 'proto://host.com/posts/show/10'
-      #   url_for :controller => 'posts', :user => 'd', :password => '123'   # => 'proto://d:123@host.com/posts'
-      #
-      # When generating a new URL, missing values may be filled in from the current request's parameters. For example,
-      # <tt>url_for :action => 'some_action'</tt> will retain the current controller, as expected. This behavior extends to
-      # other parameters, including <tt>:controller</tt>, <tt>:id</tt>, and any other parameters that are placed into a Route's
-      # path.
-      #  
-      # The URL helpers such as <tt>url_for</tt> have a limited form of memory: when generating a new URL, they can look for
-      # missing values in the current request's parameters. Routes attempts to guess when a value should and should not be
-      # taken from the defaults. There are a few simple rules on how this is performed:
-      #
-      # * If the controller name begins with a slash no defaults are used:
-      #
-      #     url_for :controller => '/home'
-      #
-      #   In particular, a leading slash ensures no namespace is assumed. Thus,
-      #   while <tt>url_for :controller => 'users'</tt> may resolve to
-      #   <tt>Admin::UsersController</tt> if the current controller lives under
-      #   that module, <tt>url_for :controller => '/users'</tt> ensures you link
-      #   to <tt>::UsersController</tt> no matter what.
-      # * If the controller changes, the action will default to index unless provided
-      #
-      # The final rule is applied while the URL is being generated and is best illustrated by an example. Let us consider the
-      # route given by <tt>map.connect 'people/:last/:first/:action', :action => 'bio', :controller => 'people'</tt>.
-      #
-      # Suppose that the current URL is "people/hh/david/contacts". Let's consider a few different cases of URLs which are generated
-      # from this page.
-      #
-      # * <tt>url_for :action => 'bio'</tt> -- During the generation of this URL, default values will be used for the first and
-      # last components, and the action shall change. The generated URL will be, "people/hh/david/bio".
-      # * <tt>url_for :first => 'davids-little-brother'</tt> This generates the URL 'people/hh/davids-little-brother' -- note
-      #   that this URL leaves out the assumed action of 'bio'.
-      #
-      # However, you might ask why the action from the current request, 'contacts', isn't carried over into the new URL. The
-      # answer has to do with the order in which the parameters appear in the generated path. In a nutshell, since the
-      # value that appears in the slot for <tt>:first</tt> is not equal to default value for <tt>:first</tt> we stop using
-      # defaults. On its own, this rule can account for much of the typical Rails URL behavior.
-      #  
-      # Although a convenience, defaults can occasionally get in your way. In some cases a default persists longer than desired.
-      # The default may be cleared by adding <tt>:name => nil</tt> to <tt>url_for</tt>'s options.
-      # This is often required when writing form helpers, since the defaults in play may vary greatly depending upon where the
-      # helper is used from. The following line will redirect to PostController's default action, regardless of the page it is
-      # displayed on:
-      #
-      #   url_for :controller => 'posts', :action => nil
-      def url_for(options = {})
-        options ||= {}
-        case options
-          when String
-            options
-          when Hash
-            @url.rewrite(rewrite_options(options))
-          else
-            polymorphic_url(options)
-        end
       end
 
       # Converts the class name from something like "OneModule::TwoModule::NeatController" to "NeatController".
@@ -1035,27 +900,6 @@ module ActionController #:nodoc:
         erase_redirect_results
       end
 
-      def rewrite_options(options) #:nodoc:
-        if defaults = default_url_options(options)
-          defaults.merge(options)
-        else
-          options
-        end
-      end
-
-      # Overwrite to implement a number of default options that all url_for-based methods will use. The default options should come in
-      # the form of a hash, just like the one you would use for url_for directly. Example:
-      #
-      #   def default_url_options(options)
-      #     { :project => @project.active? ? @project.url_name : "unknown" }
-      #   end
-      #
-      # As you can infer from the example, this is mostly useful for situations where you want to centralize dynamic decisions about the
-      # urls as they stem from the business domain. Please note that any individual url_for call can always override the defaults set
-      # by this method.
-      def default_url_options(options = nil)
-      end
-
       # Redirects the browser to the target specified in +options+. This parameter can take one of three forms:
       #
       # * <tt>Hash</tt> - The URL will be generated by calling url_for with the +options+.
@@ -1369,7 +1213,8 @@ module ActionController #:nodoc:
           # Be sure to include shadowed public instance methods of this class
           public_instance_methods(false).map { |m| m.to_s } -
           # And always exclude explicitly hidden actions
-          hidden_actions
+          hidden_actions -
+          _routes.named_routes.helper_names
       end
 
       def reset_variables_added_to_assigns

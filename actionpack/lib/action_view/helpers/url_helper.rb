@@ -1,4 +1,5 @@
 #require 'action_view/helpers/javascript_helper'
+require 'active_support/concern'
 
 module ActionView
   module Helpers #:nodoc:
@@ -8,6 +9,25 @@ module ActionView
     # and controllers.
     module UrlHelper
       include JavaScriptHelper
+
+      extend ActiveSupport::Concern
+
+      include ActionController::Routing::UrlFor
+      include TagHelper
+
+      def url_options
+        return super unless @controller.respond_to?(:url_options)
+        @controller.url_options
+      end
+
+      def _routes_context
+        @controller
+      end
+
+      def optimize_routes_generation?
+        @controller.respond_to?(:optimize_routes_generation?, true) ?
+          @controller.optimize_routes_generation? : super
+      end
 
       # Returns the URL for the set of +options+ provided. This takes the
       # same options as +url_for+ in Action Controller (see the
@@ -67,20 +87,18 @@ module ActionView
       #   # if request.env["HTTP_REFERER"] is not set or is blank
       #   # => javascript:history.back()
       def url_for(options = {})
-        options ||= {}
-        url = case options
+        case options
         when String
           options
-        when Hash
-          options = { :only_path => options[:host].nil? }.update(options.symbolize_keys)
-          @controller.send(:url_for, options)
+        when nil, Hash
+          options ||= {}
+          options = { :only_path => options[:host].nil? }.merge!(options.symbolize_keys)
+          super
         when :back
           @controller.request.env["HTTP_REFERER"] || 'javascript:history.back()'
         else
           polymorphic_path(options)
         end
-
-        url
       end
 
       # Creates a link tag of the given +name+ using a URL created by the set

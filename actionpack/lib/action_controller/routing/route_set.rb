@@ -1,60 +1,89 @@
+require 'action_dispatch/journey'
+require 'action_dispatch/http/url'
+require 'forwardable'
+require 'active_support/concern'
+require 'active_support/core_ext/object/to_query'
+require 'active_support/core_ext/hash/slice'
+require 'active_support/core_ext/hash/keep_if'
+require 'action_controller/routing/deprecated_mapper'
+require 'active_support/core_ext/module/remove_method'
+require 'active_support/core_ext/array/extract_options'
+require 'action_controller/metal/exceptions'
+
 module ActionController
+  Journey = ActionDispatch::Journey
+
   module Routing
     class RouteSet #:nodoc:
-      # Mapper instances are used to build routes. The object passed to the draw
-      # block in config/routes.rb is a Mapper instance.
-      #
-      # Mapper instances have relatively few instance methods, in order to avoid
-      # clashes with named routes.
-      class Mapper #:doc:
-        include ActionController::Resources
+      # Since the router holds references to many parts of the system
+      # like engines, controllers and the application itself, inspecting
+      # the route set can actually be really slow, therefore we default
+      # alias inspect to to_s.
+      alias inspect to_s
 
-        def initialize(set) #:nodoc:
-          @set = set
+      PARAMETERS_KEY = 'action_controller.request.path_parameters'
+
+      class Dispatcher #:nodoc:
+        def initialize(options={})
+          @defaults = options[:defaults]
+          @glob_param = options.delete(:glob)
+          @controller_class_names = {}
         end
 
-        # Create an unnamed route with the provided +path+ and +options+. See
-        # ActionController::Routing for an introduction to routes.
-        def connect(path, options = {})
-          @set.add_route(path, options)
-        end
+        def call(env)
+          params = env[PARAMETERS_KEY]
+          prepare_params!(params)
 
-        # Creates a named route called "root" for matching the root level request.
-        def root(options = {})
-          if options.is_a?(Symbol)
-            if source_route = @set.named_routes.routes[options]
-              options = source_route.defaults.merge({ :conditions => source_route.conditions })
-            end
+          # Just raise undefined constant errors if a controller was specified as default.
+          unless controller = controller(params, @defaults.key?(:controller))
+            return [404, {'X-Cascade' => 'pass'}, []]
           end
-          named_route("root", '', options)
+
+          dispatch(controller, params[:action], env)
         end
 
-        def named_route(name, path, options = {}) #:nodoc:
-          @set.add_named_route(name, path, options)
+        def prepare_params!(params)
+          normalize_controller!(params)
+          merge_default_action!(params)
+          split_glob_param!(params) if @glob_param
         end
 
-        # Enables the use of resources in a module by setting the name_prefix, path_prefix, and namespace for the model.
-        # Example:
-        #
-        #   map.namespace(:admin) do |admin|
-        #     admin.resources :products,
-        #       :has_many => [ :tags, :images, :variants ]
-        #   end
-        #
-        # This will create +admin_products_url+ pointing to "admin/products", which will look for an Admin::ProductsController.
-        # It'll also create +admin_product_tags_url+ pointing to "admin/products/#{product_id}/tags", which will look for
-        # Admin::TagsController.
-        def namespace(name, options = {}, &block)
-          if options[:namespace]
-            with_options({:path_prefix => "#{options.delete(:path_prefix)}/#{name}", :name_prefix => "#{options.delete(:name_prefix)}#{name}_", :namespace => "#{options.delete(:namespace)}#{name}/" }.merge(options), &block)
-          else
-            with_options({:path_prefix => name, :name_prefix => "#{name}_", :namespace => "#{name}/" }.merge(options), &block)
+        # If this is a default_controller (i.e. a controller specified by the user)
+        # we should raise an error in case it's not found, because it usually means
+        # a user error. However, if the controller was retrieved through a dynamic
+        # segment, as in :controller(/:action), we should simply return nil and
+        # delegate the control back to Rack cascade. Besides, if this is not a default
+        # controller, it means we should respect the @scope[:module] parameter.
+        def controller(params, default_controller=true)
+          if params && params.key?(:controller)
+            controller_param = params[:controller]
+            controller_reference(controller_param)
           end
+        rescue NameError => e
+          raise ActionController::RoutingError, e.message, e.backtrace if default_controller
         end
 
-        def method_missing(route_name, *args, &proc) #:nodoc:
-          super unless args.length >= 1 && proc.nil?
-          @set.add_named_route(route_name, *args)
+      private
+
+        def controller_reference(controller_param)
+          const_name = @controller_class_names[controller_param] ||= "#{controller_param.camelize}Controller"
+          ActiveSupport::Inflector.constantize(const_name)
+        end
+
+        def dispatch(controller, action, env)
+          controller.call(env).to_a
+        end
+
+        def normalize_controller!(params)
+          params[:controller] = params[:controller].underscore if params.key?(:controller)
+        end
+
+        def merge_default_action!(params)
+          params[:action] ||= 'index'
+        end
+
+        def split_glob_param!(params)
+          params[@glob_param] = params[@glob_param].split('/').map { |v| URI.parser.unescape(v) }
         end
       end
 
@@ -63,21 +92,25 @@ module ActionController
       # named routes.
       class NamedRouteCollection #:nodoc:
         include Enumerable
-        include ActionController::Routing::Optimisation
-        attr_reader :routes, :helpers
+        attr_reader :routes, :helpers, :module
 
         def initialize
-          clear!
+          @routes  = {}
+          @helpers = []
+          @module  = Module.new
+        end
+
+        def helper_names
+          @helpers.map(&:to_s)
         end
 
         def clear!
-          @routes = {}
-          @helpers = []
-
-          @module ||= Module.new
-          @module.instance_methods.each do |selector|
-            @module.class_eval { remove_method selector }
+          @helpers.each do |helper|
+            @module.remove_possible_method helper
           end
+
+          @routes.clear
+          @helpers.clear
         end
 
         def add(name, route)
@@ -106,234 +139,418 @@ module ActionController
           routes.length
         end
 
-        def reset!
-          old_routes = routes.dup
-          clear!
-          old_routes.each do |name, route|
-            add(name, route)
+        class UrlHelper # :nodoc:
+          def self.create(route, options)
+            if optimize_helper?(route)
+              OptimizedUrlHelper.new(route, options)
+            else
+              new route, options
+            end
           end
-        end
 
-        def install(destinations = [ActionController::Base, ActionView::Base], regenerate = false)
-          reset! if regenerate
-          Array(destinations).each do |dest|
-            dest.__send__(:include, @module)
+          def self.optimize_helper?(route)
+            route.requirements.except(:controller, :action).empty?
+          end
+
+          class OptimizedUrlHelper < UrlHelper # :nodoc:
+            attr_reader :arg_size
+
+            def initialize(route, options)
+              super
+              @path_parts   = @route.required_parts
+              @arg_size     = @path_parts.size
+              @string_route = @route.optimized_path
+            end
+
+            def call(t, args)
+              if args.size == arg_size && !args.last.is_a?(Hash) && optimize_routes_generation?(t)
+                @options.merge!(t.url_options) if t.respond_to?(:url_options)
+                @options[:path] = optimized_helper(args)
+                ActionDispatch::Http::URL.url_for(@options)
+              else
+                super
+              end
+            end
+
+            private
+
+            def optimized_helper(args)
+              path = @string_route.dup
+              klass = Journey::Router::Utils
+
+              @path_parts.zip(args) do |part, arg|
+                # Replace each route parameter
+                # e.g. :id for regular parameter or *path for globbing
+                # with ruby string interpolation code
+                path.gsub!(/(\*|:)#{part}/, klass.escape_fragment(arg.to_param))
+              end
+              path
+            end
+
+            def optimize_routes_generation?(t)
+              t.send(:optimize_routes_generation?)
+            end
+          end
+
+          def initialize(route, options)
+            @options      = options
+            @segment_keys = route.segment_keys
+            @route        = route
+          end
+
+          def call(t, args)
+            t.url_for(handle_positional_args(t, args, @options, @segment_keys))
+          end
+
+          def handle_positional_args(t, args, options, keys)
+            inner_options = args.extract_options!
+            result = options.dup
+
+            if args.size > 0
+              if args.size < keys.size - 1 # take format into account
+                keys -= t.url_options.keys if t.respond_to?(:url_options)
+                keys -= options.keys
+              end
+              result.merge!(Hash[keys.zip(args)])
+            end
+
+            result.merge!(inner_options)
           end
         end
 
         private
-          def url_helper_name(name, kind = :url)
-            :"#{name}_#{kind}"
-          end
+        # Create a url helper allowing ordered parameters to be associated
+        # with corresponding dynamic segments, so you can do:
+        #
+        #   foo_url(bar, baz, bang)
+        #
+        # Instead of:
+        #
+        #   foo_url(bar: bar, baz: baz, bang: bang)
+        #
+        # Also allow options hash, so you can do:
+        #
+        #   foo_url(bar, baz, bang, sort_by: 'baz')
+        #
+        def define_url_helper(route, name, options)
+          helper = UrlHelper.create(route, options.dup)
 
-          def hash_access_name(name, kind = :url)
-            :"hash_for_#{name}_#{kind}"
-          end
-
-          def define_named_route_methods(name, route)
-            {:url => {:only_path => false}, :path => {:only_path => true}}.each do |kind, opts|
-              hash = route.defaults.merge(:use_route => name).merge(opts)
-              define_hash_access route, name, kind, hash
-              define_url_helper route, name, kind, hash
+          @module.remove_possible_method name
+          @module.module_eval do
+            define_method(name) do |*args|
+              helper.call self, args
             end
           end
 
-          def named_helper_module_eval(code, *args)
-            @module.module_eval(code, *args)
-          end
+          helpers << name
+        end
 
-          def define_hash_access(route, name, kind, options)
-            selector = hash_access_name(name, kind)
-            named_helper_module_eval <<-end_eval # We use module_eval to avoid leaks
-              def #{selector}(options = nil)                                      # def hash_for_users_url(options = nil)
-                options ? #{options.inspect}.merge(options) : #{options.inspect}  #   options ? {:only_path=>false}.merge(options) : {:only_path=>false}
-              end                                                                 # end
-              protected :#{selector}                                              # protected :hash_for_users_url
-            end_eval
-            helpers << selector
-          end
-
-          def define_url_helper(route, name, kind, options)
-            selector = url_helper_name(name, kind)
-            # The segment keys used for positional paramters
-
-            hash_access_method = hash_access_name(name, kind)
-
-            # allow ordered parameters to be associated with corresponding
-            # dynamic segments, so you can do
-            #
-            #   foo_url(bar, baz, bang)
-            #
-            # instead of
-            #
-            #   foo_url(:bar => bar, :baz => baz, :bang => bang)
-            #
-            # Also allow options hash, so you can do
-            #
-            #   foo_url(bar, baz, bang, :sort_by => 'baz')
-            #
-            named_helper_module_eval <<-end_eval # We use module_eval to avoid leaks
-              def #{selector}(*args)                                                        # def users_url(*args)
-                args.compact!                                                               #
-                                                                                            #
-                #{generate_optimisation_block(route, kind)}                                 #   #{generate_optimisation_block(route, kind)}
-                                                                                            #
-                opts = if args.empty? || Hash === args.first                                #   opts = if args.empty? || Hash === args.first
-                  args.first || {}                                                          #     args.first || {}
-                else                                                                        #   else
-                  options = args.extract_options!                                           #     options = args.extract_options!
-                  args = args.zip(#{route.segment_keys.inspect}).inject({}) do |h, (v, k)|  #     args = args.zip([]).inject({}) do |h, (v, k)|
-                    h[k] = v                                                                #       h[k] = v
-                    h                                                                       #       h
-                  end                                                                       #     end
-                  options.merge(args)                                                       #     options.merge(args)
-                end                                                                         #   end
-                                                                                            #
-                url_for(#{hash_access_method}(opts))                                        #   url_for(hash_for_users_url(opts))
-                                                                                            #
-              end                                                                           # end
-
-              protected :#{selector}                                                        # protected :users_url
-            end_eval
-            helpers << selector
-          end
+        def define_named_route_methods(name, route)
+          define_url_helper route, :"#{name}_path",
+            route.defaults.merge(:use_route => name, :only_path => true)
+          define_url_helper route, :"#{name}_url",
+            route.defaults.merge(:use_route => name, :only_path => false)
+        end
       end
 
-      attr_accessor :routes, :named_routes, :configuration_files
+      attr_accessor :formatter, :set, :named_routes, :default_scope, :router
+      attr_accessor :disable_clear_and_finalize, :resources_path_names
+      attr_accessor :default_url_options, :request_class
 
-      def initialize
-        self.configuration_files = []
+      alias :routes :set
 
-        self.routes = []
+      def self.default_resources_path_names
+        { :new => 'new', :edit => 'edit' }
+      end
+
+      def initialize(request_class = ActionController::Request)
         self.named_routes = NamedRouteCollection.new
+        self.resources_path_names = self.class.default_resources_path_names.dup
+        self.default_url_options = {}
+        self.request_class = request_class
 
-        clear_recognize_optimized!
+        @append                     = []
+        @prepend                    = []
+        @disable_clear_and_finalize = false
+        @finalized                  = false
+
+        @set    = Journey::Routes.new
+        @router = Journey::Router.new(@set, {
+          :parameters_key => PARAMETERS_KEY,
+          :request_class  => request_class})
+        @formatter = Journey::Formatter.new @set
       end
 
-      # Subclasses and plugins may override this method to specify a different
-      # RouteBuilder instance, so that other route DSL's can be created.
-      def builder
-        @builder ||= RouteBuilder.new
+      def draw(&block)
+        clear! unless @disable_clear_and_finalize
+        eval_block(block)
+        finalize! unless @disable_clear_and_finalize
+        nil
       end
 
-      def draw
-        yield Mapper.new(self)
-        install_helpers
+      def append(&block)
+        @append << block
+      end
+
+      def prepend(&block)
+        @prepend << block
+      end
+
+      def eval_block(block)
+        mapper = Mapper.new(self)
+        if block.arity == 1
+          mapper.instance_exec(DeprecatedMapper.new(self), &block)
+        else
+          if default_scope
+            mapper.with_default_scope(default_scope, &block)
+          else
+            mapper.instance_exec(&block)
+          end
+        end
+      end
+
+      def finalize!
+        return if @finalized
+        @append.each { |blk| eval_block(blk) }
+        @finalized = true
       end
 
       def clear!
-        routes.clear
+        @finalized = false
         named_routes.clear
-        @combined_regexp = nil
-        @routes_by_controller = nil
-        # This will force routing/recognition_optimization.rb
-        # to refresh optimisations.
-        clear_recognize_optimized!
+        set.clear
+        formatter.clear
+        @prepend.each { |blk| eval_block(blk) }
       end
 
-      def install_helpers(destinations = [ActionController::Base, ActionView::Base], regenerate_code = false)
-        Array(destinations).each { |d| d.module_eval { include Helpers } }
-        named_routes.install(destinations, regenerate_code)
+      def url_helpers
+        @url_helpers ||= begin
+          routes = self
+
+          Module.new do
+            extend ActiveSupport::Concern
+            include UrlFor
+
+            # Define url_for in the singleton level so one can do:
+            # Rails.application.routes.url_helpers.url_for(args)
+            @_routes = routes
+            class << self
+              delegate :url_for, :optimize_routes_generation?, :to => '@_routes'
+            end
+
+            # Make named_routes available in the module singleton
+            # as well, so one can do:
+            # Rails.application.routes.url_helpers.posts_path
+            extend routes.named_routes.module
+
+            # Any class that includes this module will get all
+            # named routes...
+            include routes.named_routes.module
+
+            # plus a singleton class method called _routes ...
+            included do
+              singleton_class.send(:redefine_method, :_routes) { routes }
+            end
+
+            # And an instance method _routes. Note that
+            # UrlFor (included in this module) add extra
+            # conveniences for working with @_routes.
+            define_method(:_routes) { @_routes || routes }
+          end
+        end
       end
 
       def empty?
         routes.empty?
       end
 
-      def add_configuration_file(path)
-        self.configuration_files << path
-      end
+      def add_route(app, conditions = {}, requirements = {}, defaults = {}, name = nil, anchor = true)
+        raise ArgumentError, "Invalid route name: '#{name}'" unless name.blank? || name.to_s.match(/^[_a-z]\w*$/i)
 
-      # Deprecated accessor
-      def configuration_file=(path)
-        add_configuration_file(path)
-      end
-      
-      # Deprecated accessor
-      def configuration_file
-        configuration_files
-      end
-
-      def load!
-        Routing.use_controllers!(nil) # Clear the controller cache so we may discover new ones
-        clear!
-        load_routes!
-      end
-
-      # reload! will always force a reload whereas load checks the timestamp first
-      alias reload! load!
-
-      def reload
-        if configuration_files.any? && @routes_last_modified
-          if routes_changed_at == @routes_last_modified
-            return # routes didn't change, don't reload
-          else
-            @routes_last_modified = routes_changed_at
-          end
+        if name && named_routes[name]
+          raise ArgumentError, "Invalid route name, already in use: '#{name}' \n" \
+            "You may have defined two routes with the same name using the `:as` option, or " \
+            "you may be overriding a route already defined by a resource with the same naming. " \
+            "For the latter, you can restrict the routes created with `resources` as explained here: \n" \
+            "http://guides.rubyonrails.org/routing.html#restricting-the-routes-created"
         end
 
-        load!
-      end
+        path = build_path(conditions.delete(:path_info), requirements, SEPARATORS, anchor)
+        conditions = build_conditions(conditions, path.names.map { |x| x.to_sym })
 
-      def load_routes!
-        if configuration_files.any?
-          configuration_files.each { |config| load(config) }
-          @routes_last_modified = routes_changed_at
-        else
-          add_route ":controller/:action/:id"
-        end
-      end
-      
-      def routes_changed_at
-        routes_changed_at = nil
-        
-        configuration_files.each do |config|
-          config_changed_at = File.stat(config).mtime
-
-          if routes_changed_at.nil? || config_changed_at > routes_changed_at
-            routes_changed_at = config_changed_at 
-          end
-        end
-        
-        routes_changed_at
-      end
-
-      def add_route(path, options = {})
-        options.each { |k, v| options[k] = v.to_s if [:controller, :action].include?(k) && v.is_a?(Symbol) }
-        route = builder.build(path, options)
-        routes << route
+        route = @set.add_route(app, path, conditions, defaults, name)
+        named_routes[name] = route if name
         route
       end
 
-      def add_named_route(name, path, options = {})
-        # TODO - is options EVER used?
-        name = options[:name_prefix] + name.to_s if options[:name_prefix]
-        named_routes[name.to_sym] = add_route(path, options)
+      def build_path(path, requirements, separators, anchor)
+        strexp = Journey::Router::Strexp.new(
+            path,
+            requirements,
+            SEPARATORS,
+            anchor)
+
+        pattern = Journey::Path::Pattern.new(strexp)
+
+        builder = Journey::GTG::Builder.new pattern.spec
+
+        # Get all the symbol nodes followed by literals that are not the
+        # dummy node.
+        symbols = pattern.spec.grep(Journey::Nodes::Symbol).find_all { |n|
+          builder.followpos(n).first.literal?
+        }
+
+        # Get all the symbol nodes preceded by literals.
+        symbols.concat pattern.spec.find_all(&:literal?).map { |n|
+          builder.followpos(n).first
+        }.find_all(&:symbol?)
+
+        symbols.each { |x|
+          x.regexp = /(?:#{Regexp.union(x.regexp, '-')})+/
+        }
+
+        pattern
       end
+      private :build_path
 
-      def options_as_params(options)
-        # If an explicit :controller was given, always make :action explicit
-        # too, so that action expiry works as expected for things like
-        #
-        #   generate({:controller => 'content'}, {:controller => 'content', :action => 'show'})
-        #
-        # (the above is from the unit tests). In the above case, because the
-        # controller was explicitly given, but no action, the action is implied to
-        # be "index", not the recalled action of "show".
-        #
-        # great fun, eh?
+      def build_conditions(current_conditions, path_values)
+        conditions = current_conditions.dup
 
-        options_as_params = options.clone
-        options_as_params[:action] ||= 'index' if options[:controller]
-        options_as_params[:action] = options_as_params[:action].to_s if options_as_params[:action]
-        options_as_params
-      end
-
-      def build_expiry(options, recall)
-        recall.inject({}) do |expiry, (key, recalled_value)|
-          expiry[key] = (options.key?(key) && options[key].to_param != recalled_value.to_param)
-          expiry
+        # Rack-Mount requires that :request_method be a regular expression.
+        # :request_method represents the HTTP verb that matches this route.
+        #
+        # Here we munge values before they get sent on to rack-mount.
+        verbs = conditions[:request_method_string] || []
+        unless Regexp === verbs || verbs.empty?
+          conditions[:request_method_string] = %r[^#{Array(verbs).join('|')}$]
         end
+
+        conditions.keep_if do |k, _|
+          k == :action || k == :controller || k == :required_defaults ||
+            @request_class.public_method_defined?(k) || path_values.include?(k)
+        end
+      end
+      private :build_conditions
+
+      class Generator #:nodoc:
+        PARAMETERIZE = lambda do |name, value|
+          if name == :controller
+            value
+          elsif value.is_a?(Array)
+            value.map { |v| v.to_param }.join('/')
+          elsif param = value.to_param
+            param
+          end
+        end
+
+        attr_reader :options, :recall, :set, :named_route
+
+        def initialize(options, recall, set)
+          @named_route = options.delete(:use_route)
+          @options     = options.dup
+          @recall      = recall.dup
+          @set         = set
+
+          normalize_options!
+          normalize_controller_action_id!
+          use_relative_controller!
+          normalize_controller!
+          handle_nil_action!
+        end
+
+        def controller
+          @options[:controller]
+        end
+
+        def current_controller
+          @recall[:controller]
+        end
+
+        def use_recall_for(key)
+          if @recall[key] && (!@options.key?(key) || @options[key] == @recall[key])
+            if !named_route_exists? || segment_keys.include?(key)
+              @options[key] = @recall.delete(key)
+            end
+          end
+        end
+
+        def normalize_options!
+          # If an explicit :controller was given, always make :action explicit
+          # too, so that action expiry works as expected for things like
+          #
+          #   generate({:controller => 'content'}, {:controller => 'content', :action => 'show'})
+          #
+          # (the above is from the unit tests). In the above case, because the
+          # controller was explicitly given, but no action, the action is implied to
+          # be "index", not the recalled action of "show".
+
+          if options[:controller]
+            options[:action]     ||= 'index'
+            options[:controller]   = options[:controller].to_s
+          end
+
+          if options[:action]
+            options[:action] = options[:action].to_s
+          end
+        end
+
+        # This pulls :controller, :action, and :id out of the recall.
+        # The recall key is only used if there is no key in the options
+        # or if the key in the options is identical. If any of
+        # :controller, :action or :id is not found, don't pull any
+        # more keys from the recall.
+        def normalize_controller_action_id!
+          @recall[:action] ||= 'index' if current_controller
+
+          use_recall_for(:controller) or return
+          use_recall_for(:action) or return
+          use_recall_for(:id)
+        end
+
+        # if the current controller is "foo/bar/baz" and :controller => "baz/bat"
+        # is specified, the controller becomes "foo/baz/bat"
+        def use_relative_controller!
+          if !named_route && different_controller? && !controller.start_with?("/")
+            old_parts = current_controller.split('/')
+            size = controller.count("/") + 1
+            parts = old_parts[0...-size] << controller
+            @options[:controller] = parts.join("/")
+          end
+        end
+
+        # Remove leading slashes from controllers
+        def normalize_controller!
+          @options[:controller] = controller.sub(%r{^/}, '') if controller
+        end
+
+        # This handles the case of :action => nil being explicitly passed.
+        # It is identical to :action => "index"
+        def handle_nil_action!
+          if options.has_key?(:action) && options[:action].nil?
+            options[:action] = 'index'
+          end
+          recall[:action] = options.delete(:action) if options[:action] == 'index'
+        end
+
+        # Generates a path from routes, returns [path, params].
+        # If no route is generated the formatter will raise ActionController::UrlGenerationError
+        def generate
+          @set.formatter.generate(:path_info, named_route, options, recall, PARAMETERIZE)
+        end
+
+        def different_controller?
+          return false unless current_controller
+          controller.to_param != current_controller.to_param
+        end
+
+        private
+          def named_route_exists?
+            named_route && set.named_routes[named_route]
+          end
+
+          def segment_keys
+            set.named_routes[named_route].segment_keys
+          end
       end
 
       # Generate the path indicated by the arguments, and return an array of
@@ -343,160 +560,113 @@ module ActionController
       end
 
       def generate_extras(options, recall={})
-        generate(options, recall, :generate_extras)
+        path, params = generate(options, recall)
+        return path, params.keys
       end
 
-      def generate(options, recall = {}, method=:generate)
-        named_route_name = options.delete(:use_route)
-        generate_all = options.delete(:generate_all)
-        if named_route_name
-          named_route = named_routes[named_route_name]
-          options = named_route.parameter_shell.merge(options)
-        end
-
-        options = options_as_params(options)
-        expire_on = build_expiry(options, recall)
-
-        if options[:controller]
-          options[:controller] = options[:controller].to_s
-        end
-        # if the controller has changed, make sure it changes relative to the
-        # current controller module, if any. In other words, if we're currently
-        # on admin/get, and the new controller is 'set', the new controller
-        # should really be admin/set.
-        if !named_route && expire_on[:controller] && options[:controller] && options[:controller][0] != ?/
-          old_parts = recall[:controller].split('/')
-          new_parts = options[:controller].split('/')
-          parts = old_parts[0..-(new_parts.length + 1)] + new_parts
-          options[:controller] = parts.join('/')
-        end
-
-        # drop the leading '/' on the controller name
-        options[:controller] = options[:controller][1..-1] if options[:controller] && options[:controller][0] == ?/
-        merged = recall.merge(options)
-
-        if named_route
-          path = named_route.generate(options, merged, expire_on)
-          if path.nil?
-            raise_named_route_error(options, named_route, named_route_name)
-          else
-            return path
-          end
-        else
-          merged[:action] ||= 'index'
-          options[:action] ||= 'index'
-
-          controller = merged[:controller]
-          action = merged[:action]
-
-          raise RoutingError, "Need controller and action!" unless controller && action
-
-          if generate_all
-            # Used by caching to expire all paths for a resource
-            return routes.collect do |route|
-              route.__send__(method, options, merged, expire_on)
-            end.compact
-          end
-
-          # don't use the recalled keys when determining which routes to check
-          future_routes, deprecated_routes = routes_by_controller[controller][action][options.reject {|k,v| !v}.keys.sort_by { |x| x.object_id }]
-          routes = Routing.generate_best_match ? deprecated_routes : future_routes
-
-          routes.each_with_index do |route, index|
-            results = route.__send__(method, options, merged, expire_on)
-            if results && (!results.is_a?(Array) || results.first)
-              return results
-            end
-          end
-        end
-
-        raise RoutingError, "No route matches #{options.inspect}"
+      def generate(options, recall = {})
+        Generator.new(options, recall, self).generate
       end
 
-      # try to give a helpful error message when named route generation fails
-      def raise_named_route_error(options, named_route, named_route_name)
-        diff = named_route.requirements.diff(options)
-        unless diff.empty?
-          raise RoutingError, "#{named_route_name}_url failed to generate from #{options.inspect}, expected: #{named_route.requirements.inspect}, diff: #{named_route.requirements.diff(options).inspect}"
-        else
-          required_segments = named_route.segments.select {|seg| (!seg.optional?) && (!seg.is_a?(DividerSegment)) }
-          required_keys_or_values = required_segments.map { |seg| seg.key rescue seg.value } # we want either the key or the value from the segment
-          raise RoutingError, "#{named_route_name}_url failed to generate from #{options.inspect} - you may have ambiguous routes, or you may need to supply additional parameters for this route.  content_url has the following required parameters: #{required_keys_or_values.inspect} - are they all satisfied?"
+      RESERVED_OPTIONS = [:host, :protocol, :port, :subdomain, :domain, :tld_length,
+                          :trailing_slash, :anchor, :params, :only_path, :script_name,
+                          :original_script_name]
+
+      def mounted?
+        false
+      end
+
+      def optimize_routes_generation?
+        !mounted? && default_url_options.empty?
+      end
+
+      def _generate_prefix(options = {})
+        nil
+      end
+
+      # The +options+ argument must be +nil+ or a hash whose keys are *symbols*.
+      def url_for(options)
+        options = default_url_options.merge(options || {})
+
+        user, password = extract_authentication(options)
+        recall  = options.delete(:_recall)
+
+        original_script_name = options.delete(:original_script_name).presence
+        script_name = options.delete(:script_name).presence || _generate_prefix(options)
+
+        if script_name && original_script_name
+          script_name = original_script_name + script_name
         end
+
+        path_options = options.except(*RESERVED_OPTIONS)
+        path_options = yield(path_options) if block_given?
+
+        path, params = generate(path_options, recall || {})
+        params.merge!(options[:params] || {})
+
+        ActionDispatch::Http::URL.url_for(options.merge!({
+          :path => path,
+          :script_name => script_name,
+          :params => params,
+          :user => user,
+          :password => password
+        }))
       end
 
       def call(env)
-        request = Request.new(env)
-        app = Routing::Routes.recognize(request)
-        app.call(env).to_a
+        @router.call(env)
       end
 
-      def recognize(request)
-        params = recognize_path(request.path, extract_request_environment(request))
-        request.path_parameters = params.with_indifferent_access
-        "#{params[:controller].to_s.camelize}Controller".constantize
-      end
+      def recognize_path(path, environment = {})
+        method = (environment[:method] || "GET").to_s.upcase
+        path = Journey::Router::Utils.normalize_path(path) unless path =~ %r{://}
+        extras = environment[:extras] || {}
 
-      def recognize_path(path, environment={})
-        raise "Not optimized! Check that routing/recognition_optimisation overrides RouteSet#recognize_path."
-      end
+        begin
+          env = Rack::MockRequest.env_for(path, {:method => method})
+        rescue URI::InvalidURIError => e
+          raise ActionController::RoutingError, e.message
+        end
 
-      def routes_by_controller
-        @routes_by_controller ||= Hash.new do |controller_hash, controller|
-          controller_hash[controller] = Hash.new do |action_hash, action|
-            action_hash[action] = Hash.new do |key_hash, keys|
-              key_hash[keys] = [
-                routes_for_controller_and_action_and_keys(controller, action, keys),
-                deprecated_routes_for_controller_and_action_and_keys(controller, action, keys)
-              ]
+        req = @request_class.new(env)
+        @router.recognize(req) do |route, matches, params|
+          params.merge!(extras)
+          params.each do |key, value|
+            if value.is_a?(String)
+              value = value.dup.force_encoding(Encoding::BINARY) if value.encoding_aware?
+              params[key] = URI.parser.unescape(value)
+            end
+          end
+          old_params = env[::ActionController::Routing::RouteSet::PARAMETERS_KEY]
+          env[::ActionController::Routing::RouteSet::PARAMETERS_KEY] = (old_params || {}).merge(params)
+          dispatcher = route.app
+          while dispatcher.is_a?(Mapper::Constraints) && dispatcher.matches?(env) do
+            dispatcher = dispatcher.app
+          end
+
+          if dispatcher.is_a?(Dispatcher)
+            if dispatcher.controller(params, false)
+              dispatcher.prepare_params!(params)
+              return params
+            else
+              raise ActionController::RoutingError, "A route matches #{path.inspect}, but references missing controller: #{params[:controller].camelize}Controller"
             end
           end
         end
+
+        raise ActionController::RoutingError, "No route matches #{path.inspect}"
       end
 
-      def routes_for(options, merged, expire_on)
-        raise "Need controller and action!" unless controller && action
-        controller = merged[:controller]
-        merged = options if expire_on[:controller]
-        action = merged[:action] || 'index'
+      private
 
-        routes_by_controller[controller][action][merged.keys][1]
-      end
-
-      def routes_for_controller_and_action(controller, action)
-        ActiveSupport::Deprecation.warn "routes_for_controller_and_action() has been deprecated. Please use routes_for()"
-        selected = routes.select do |route|
-          route.matches_controller_and_action? controller, action
+        def extract_authentication(options)
+          if options[:user] && options[:password]
+            [options.delete(:user), options.delete(:password)]
+          else
+            nil
+          end
         end
-        (selected.length == routes.length) ? routes : selected
-      end
 
-      def routes_for_controller_and_action_and_keys(controller, action, keys)
-        routes.select do |route|
-          route.matches_controller_and_action? controller, action
-        end
-      end
-
-      def deprecated_routes_for_controller_and_action_and_keys(controller, action, keys)
-        selected = routes.select do |route|
-          route.matches_controller_and_action? controller, action
-        end
-        selected.sort_by do |route|
-          (keys - route.significant_keys).length
-        end
-      end
-
-      # Subclasses and plugins may override this method to extract further attributes
-      # from the request, for use by route conditions and such.
-      def extract_request_environment(request)
-        {
-          :method => request.method,
-          :host   => request.host,
-          :domain => request.domain,
-          :subdomain => request.subdomains.first,
-          :fullsubdomain => request.subdomains.join('.')
-        }
-      end
     end
   end
 end
