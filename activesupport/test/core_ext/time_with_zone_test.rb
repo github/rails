@@ -82,7 +82,8 @@ class TimeWithZoneTest < ActiveSupport::TestCase
   end
 
   def test_to_s_db
-    assert_equal '2000-01-01 00:00:00', @twz.to_s(:db)
+    # This test assumes the local timezone of the machine is Pacific.
+    assert_equal '1999-12-31 16:00:00', @twz.to_s(:db)
   end
 
   def test_xmlschema
@@ -696,7 +697,7 @@ class TimeWithZoneTest < ActiveSupport::TestCase
     assert_equal "Sun, 15 Jul 2007 10:30:00 EDT -04:00", twz.years_ago(1).inspect
     assert_equal "Sun, 15 Jul 2007 10:30:00 EDT -04:00", (twz - 1.year).inspect
   end
-  
+
   protected
     def with_env_tz(new_tz = 'US/Eastern')
       old_tz, ENV['TZ'] = ENV['TZ'], new_tz

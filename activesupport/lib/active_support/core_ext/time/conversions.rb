@@ -4,7 +4,14 @@ module ActiveSupport #:nodoc:
       # Converting times to formatted strings, dates, and datetimes.
       module Conversions
         DATE_FORMATS = {
-          :db           => "%Y-%m-%d %H:%M:%S",
+          :db           => lambda { |time|
+            # our DB is in local time (ugh), so make sure the time object is
+            # converted to local time before converting it to a db string
+            #
+            # also we have to do this ridiculous dance to ensure that we can
+            # turn any given DateTime object into something in localtime.
+            time.utc.to_time.getlocal.strftime("%Y-%m-%d %H:%M:%S")
+          },
           :number       => "%Y%m%d%H%M%S",
           :time         => "%H:%M",
           :short        => "%d %b %H:%M",
@@ -48,7 +55,7 @@ module ActiveSupport #:nodoc:
           return to_default_s unless formatter = DATE_FORMATS[format]
           formatter.respond_to?(:call) ? formatter.call(self).to_s : strftime(formatter)
         end
-        
+
         # Returns the UTC offset as an +HH:MM formatted string.
         #
         #   Time.local(2000).formatted_offset         # => "-06:00"

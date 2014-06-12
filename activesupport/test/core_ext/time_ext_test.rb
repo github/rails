@@ -457,7 +457,6 @@ class TimeExtCalculationsTest < ActiveSupport::TestCase
     time = Time.utc(2005, 2, 21, 17, 44, 30)
     assert_equal time.to_default_s,                 time.to_s
     assert_equal time.to_default_s,                 time.to_s(:doesnt_exist)
-    assert_equal "2005-02-21 17:44:30",             time.to_s(:db)
     assert_equal "21 Feb 17:44",                    time.to_s(:short)
     assert_equal "17:44",                           time.to_s(:time)
     assert_equal "February 21, 2005 17:44",         time.to_s(:long)
@@ -469,6 +468,10 @@ class TimeExtCalculationsTest < ActiveSupport::TestCase
       assert_equal "Thu, 05 Feb 2009 14:30:05 -0600", Time.local(2009, 2, 5, 14, 30, 5).to_s(:rfc822)
       assert_equal "Mon, 09 Jun 2008 04:05:01 -0500", Time.local(2008, 6, 9, 4, 5, 1).to_s(:rfc822)
     end
+
+    # this one's a special snowflake because the db time is local
+    time = Time.new(2005, 2, 21, 17, 44, 30)
+    assert_equal "2005-02-21 17:44:30",             time.to_s(:db)
   end
 
   def test_custom_date_format
@@ -688,7 +691,7 @@ class TimeExtCalculationsTest < ActiveSupport::TestCase
   def test_minus_with_time_with_zone
     assert_equal  86_400.0, Time.utc(2000, 1, 2) - ActiveSupport::TimeWithZone.new( Time.utc(2000, 1, 1), ActiveSupport::TimeZone['UTC'] )
   end
-  
+
   def test_minus_with_datetime
     assert_equal  86_400.0, Time.utc(2000, 1, 2) - DateTime.civil(2000, 1, 1)
   end

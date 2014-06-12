@@ -7,7 +7,7 @@ class RangeTest < Test::Unit::TestCase
   end
 
   def test_to_s_from_times
-    date_range = Time.utc(2005, 12, 10, 15, 30)..Time.utc(2005, 12, 10, 17, 30)
+    date_range = Time.new(2005, 12, 10, 15, 30)..Time.new(2005, 12, 10, 17, 30)
     assert_equal "BETWEEN '2005-12-10 15:30:00' AND '2005-12-10 17:30:00'", date_range.to_s(:db)
   end
 
