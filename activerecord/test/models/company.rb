@@ -51,13 +51,13 @@ class Firm < Company
   has_many :clients_like_ms, :conditions => "name = 'Microsoft'", :class_name => "Client", :order => "id"
   has_many :clients_with_interpolated_conditions, :class_name => "Client", :conditions => 'rating > #{rating}'
   has_many :clients_like_ms_with_hash_conditions, :conditions => { :name => 'Microsoft' }, :class_name => "Client", :order => "id"
-  has_many :clients_using_sql, :class_name => "Client", :finder_sql => 'SELECT * FROM companies WHERE client_of = #{id}'
+  has_many :clients_using_sql, :class_name => "Client", :finder_sql => proc{"SELECT * FROM companies WHERE client_of = #{id}"}
   has_many :clients_using_counter_sql, :class_name => "Client",
-           :finder_sql  => 'SELECT * FROM companies WHERE client_of = #{id}',
-           :counter_sql => 'SELECT COUNT(*) FROM companies WHERE client_of = #{id}'
+           :finder_sql  => proc{"SELECT * FROM companies WHERE client_of = #{id}"},
+           :counter_sql => proc{"SELECT COUNT(*) FROM companies WHERE client_of = #{id}"}
   has_many :clients_using_zero_counter_sql, :class_name => "Client",
-           :finder_sql  => 'SELECT * FROM companies WHERE client_of = #{id}',
-           :counter_sql => 'SELECT 0 FROM companies WHERE client_of = #{id}'
+           :finder_sql  => proc{"SELECT * FROM companies WHERE client_of = #{id}"},
+           :counter_sql => proc{"SELECT 0 FROM companies WHERE client_of = #{id}"}
   has_many :no_clients_using_counter_sql, :class_name => "Client",
            :finder_sql  => 'SELECT * FROM companies WHERE client_of = 1000',
            :counter_sql => 'SELECT COUNT(*) FROM companies WHERE client_of = 1000'
