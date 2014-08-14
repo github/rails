@@ -418,10 +418,10 @@ module ActionDispatch
             if name == :controller
               value
             elsif value.is_a?(Array)
-              value.map { |v| Rack::Mount::Utils.escape_uri(v.to_param) }.join('/')
+              value.map { |v| URI::DEFAULT_PARSER.escape(v.to_param) }.join('/')
             else
               return nil unless param = value.to_param
-              param.split('/').map { |v| Rack::Mount::Utils.escape_uri(v) }.join("/")
+              param.split('/').map { |v| URI::DEFAULT_PARSER.escape(v) }.join("/")
             end
           end
           {:parameterize => parameterize}
@@ -489,7 +489,7 @@ module ActionDispatch
 
         # ROUTES TODO: This can be called directly, so script_name should probably be set in the routes
         rewritten_url << (options[:trailing_slash] ? path.sub(/\?|\z/) { "/" + $& } : path)
-        rewritten_url << "##{Rack::Mount::Utils.escape_uri(options[:anchor].to_param.to_s)}" if options[:anchor]
+        rewritten_url << "##{URI::DEFAULT_PARSER.escape(options[:anchor].to_param.to_s)}" if options[:anchor]
 
         rewritten_url
       end
