@@ -418,10 +418,10 @@ module ActionDispatch
             if name == :controller
               value
             elsif value.is_a?(Array)
-              value.map { |v| Rack::Mount::Utils.escape_uri(v.to_param) }.join('/')
+              value.map { |v| URI::DEFAULT_PARSER.escape(v.to_param) }.join('/')
             else
               return nil unless param = value.to_param
-              param.split('/').map { |v| Rack::Mount::Utils.escape_uri(v) }.join("/")
+              param.split('/').map { |v| URI::DEFAULT_PARSER.escape(v) }.join("/")
             end
           end
           {:parameterize => parameterize}
