@@ -1162,6 +1162,12 @@ class TestRoutingMapper < ActionDispatch::IntegrationTest
     end
   end
 
+  def test_path_escaping
+    with_test_routes do
+      assert_equal '/articles/2009/8/18/give-110%25-more', article_path(:year => 2009, :month => 8, :day => 18, :title => 'give-110%-more')
+    end
+  end
+
   def test_account_namespace
     with_test_routes do
       get '/account/subscription'
